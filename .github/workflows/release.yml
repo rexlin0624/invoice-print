@@ -98,7 +98,12 @@ jobs:
             targets: 'x86_64-apple-darwin'
             maxmem: 4000
           - platform: ubuntu-22.04
-            args: ''
+            # 不出 rpm：RPM 规范要求包名以字母/数字/下划线/% 开头，而中文产品名
+            # `发票工具` 会被 rpm 打包器直接拒绝 ——
+            # `failed to bundle project: invalid name "发票工具": must start with an
+            # alphanumeric character, '_', or '%'`。deb 与 AppImage 都接受中文名，
+            # 而 AppImage 本来就是发行版无关的，rpm 的缺口由它兜住。
+            args: '--bundles deb,appimage'
             targets: ''
             maxmem: 8000
           # Windows 只要 NSIS 的 `-setup.exe`，不要 msi

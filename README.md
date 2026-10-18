@@ -5,6 +5,20 @@
 
 **文件不上传。** 解析、排版、打印 PDF 全部在你的浏览器里生成，断网也能用，没有账号系统。
 
+### 下载
+
+发布包在 [Releases](https://github.com/rexlin0624/invoice-print/releases/latest) —— 四个平台的包都由 CI 出（本机不出发布包），文件名形如 `invoice-tool_<版本>_…`：
+
+| 平台     | 文件                                                                   | 说明                                                                                     |
+| -------- | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| Windows  | `invoice-tool_<版本>_windows_x64-setup.exe`                             | NSIS 安装包。**未签名**，SmartScreen 会拦一次（「更多信息」→「仍要运行」）                 |
+| macOS    | `…_darwin_aarch64.dmg`（Apple 芯片）· `…_darwin_x64.dmg`（Intel）        | **未签名、未公证**：首次打开要**右键 →「打开」**，双击会被 Gatekeeper 拦下                 |
+| Linux    | `…_linux_amd64.AppImage` · `…_linux_amd64.deb`                          | 需要 `webkit2gtk-4.1`（deb 已声明依赖）。不出 rpm：RPM 规范不接受中文包名                  |
+| 网页版   | `invoice-tool_<版本>_web.zip`                                           | 解压后当静态站点托管（`python3 -m http.server` 即可），或直接用任意静态服务器；不需要安装 |
+
+包里的 **OCR 中文模型是发布流程现备的**（`pnpm ocr:prepare` —— 模型不进版本库，见 `.gitignore`），
+所以下载下来就能**离线**识别扫描件 / 图片发票，不必再配环境。
+
 ---
 
 ## 现在能做什么（M1 → M4）

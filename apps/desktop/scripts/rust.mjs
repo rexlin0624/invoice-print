@@ -72,6 +72,7 @@ if (tool !== 'cargo' && tool !== 'tauri') {
 
 const sub = args[0] ?? '';
 const forced = process.env.ALLOW_RUST_BUILD === '1' || process.env.CI === 'true';
+const isCI = process.env.CI === 'true';
 const safe = tool === 'cargo' && METADATA_ONLY.has(sub);
 
 if (!safe && !forced) {
@@ -103,7 +104,12 @@ const commandArgs = launcher ? ['-c', 'background', spec.bin, ...argvs] : argvs;
 // 详细理由见文件头 §2 与 AGENTS.md §1。
 const memory = systemMemory(true);
 
-if (memory && process.env.RUST_SKIP_PREFLIGHT !== '1') {
+// CI 上不做自检：这条线的**用途**是「内存紧张时退掉应用再回来」，而 runner 上没有
+// 应用可退、也没人可叫醒 —— 它只会变成一个随机拦人的开关（实测同一次发布里，
+// macOS aarch64 那一刻够内存就过，x86_64 那一刻 2.89 GB < 2.93 GB 就被拦，构建
+// 还没开始就失败）。运行期看门狗（run() 里那个，按 RUST_MAX_MEMORY_MB 与
+// RUST_MIN_FREE_RATIO）不受影响，跑飞了照样刹。
+if (memory && !isCI && process.env.RUST_SKIP_PREFLIGHT !== '1') {
   if (memory.usableMb >= PREFLIGHT_MIN_MB) {
     log(`起飞前自检：可用内存 ${gb(memory.usableMb)}，门槛 ${gb(PREFLIGHT_MIN_MB)} ✓`);
   } else if (safe) {
@@ -115,6 +121,8 @@ if (memory && process.env.RUST_SKIP_PREFLIGHT !== '1') {
   } else {
     refuse(preflightMessage(memory, PREFLIGHT_MIN_MB));
   }
+} else if (memory && isCI) {
+  log(`CI 环境：跳过起飞前自检（可用内存 ${gb(memory.usableMb)}），运行期看门狗照旧`);
 }
 
 run(command, commandArgs);
