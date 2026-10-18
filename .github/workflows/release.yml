@@ -48,13 +48,15 @@ jobs:
       # assetNamePattern），这里顺手把老名字清掉 —— 第二次之后再跑就是空操作。
       # 不清的话，tauri-action 按「算出来的名字」去找同名附件（找不到）→ 直接传 →
       # already_exists，整个作业失败。
+      # `*_linux_*` 也在清理范围内：Linux 已不在支持范围（AGENTS.md §7），
+      # 这条规则只为把 v0.1.0 那次留下的 deb / AppImage 从发布页上撤掉，之后不再命中。
       - name: 清理陈旧命名的附件
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' 2>/dev/null \
-            | grep -E '^_|^invoice-tool-web-' \
+            | grep -E '^_|^invoice-tool-web-|_linux_' \
             | while read -r name; do
                 echo "删除陈旧附件：$name"
                 gh release delete-asset "$GITHUB_REF_NAME" "$name" --yes
@@ -71,10 +73,11 @@ jobs:
   # 为什么发布包默认在这里构建：本机是 8 GB 内存的 MacBook Air，
   # `cargo build --release` 的完整 codegen + 单进程链接实测峰值 1178 MB（2026-10-18），
   # 本机跑得动 —— 但那几分钟里没人踩刹车，而 CI 不占本机内存（AGENTS.md §1）。
-  # Tauri 的三平台产物默认在这里出。
+  # Tauri 的桌面端产物默认在这里出。
   #
   # 前端产物由 `apps/desktop/src-tauri/tauri.conf.json` 的 `beforeBuildCommand`
   # 负责生成（`pnpm --filter @invoice-tool/web build`）—— 桌面端没有自己的界面代码。
+  # 平台范围：Windows + macOS 两个架构（Linux 已出局，AGENTS.md §7）。
   # ---------------------------------------------------------------------------
   desktop:
     # 等 web 先把 Release 建出来：web 用 softprops/action-gh-release、desktop 用
@@ -86,9 +89,8 @@ jobs:
       matrix:
         include:
           # maxmem 是给 rust.mjs 看门狗的上限（RUST_MAX_MEMORY_MB）。本机默认 2500 MB 是
-          # 按 8 GB 笔记本定的（AGENTS.md §1）；CI runner 内存大得多，而且 Linux 的 GNU ld
-          # 做 thin-LTO 链接比 macOS 的 ld64 吃内存 —— 沿用 2500 会把链接阶段误杀。
-          # 只放宽上限，不撤看门狗（跑飞了仍然会刹）。
+          # 按 8 GB 笔记本定的（AGENTS.md §1）；CI runner 内存大得多，沿用 2500 会把
+          # 链接阶段误杀。只放宽上限，不撤看门狗（跑飞了仍然会刹）。
           - platform: macos-latest
             args: '--target aarch64-apple-darwin'
             targets: 'aarch64-apple-darwin'
@@ -97,15 +99,9 @@ jobs:
             args: '--target x86_64-apple-darwin'
             targets: 'x86_64-apple-darwin'
             maxmem: 4000
-          - platform: ubuntu-22.04
-            # 不出 rpm：RPM 规范要求包名以字母/数字/下划线/% 开头，而中文产品名
-            # `发票工具` 会被 rpm 打包器直接拒绝 ——
-            # `failed to bundle project: invalid name "发票工具": must start with an
-            # alphanumeric character, '_', or '%'`。deb 与 AppImage 都接受中文名，
-            # 而 AppImage 本来就是发行版无关的，rpm 的缺口由它兜住。
-            args: '--bundles deb,appimage'
-            targets: ''
-            maxmem: 8000
+          # Linux 不在支持范围（AGENTS.md §7）：rpm 打包器拒绝中文包名，deb / AppImage
+          # 换不来用户群 —— 别再往这个矩阵里加 ubuntu 条目。CI 的 ubuntu 作业只负责
+          # 跑 cargo test（ci.yml），与发布无关。
           # Windows 只要 NSIS 的 `-setup.exe`，不要 msi
           # （`bundle.targets` 是 "all"，这里按平台收窄）。
           - platform: windows-latest
@@ -135,13 +131,6 @@ jobs:
         # 上编 x86_64（或反过来）必须先 `rustup target add`，否则报「target may not be installed」。
         if: matrix.targets != ''
         run: rustup target add ${{ matrix.targets }}
-
-      - name: Linux 依赖
-        if: matrix.platform == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
-            librsvg2-dev patchelf
 
       - run: pnpm install --frozen-lockfile
 

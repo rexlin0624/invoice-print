@@ -7,14 +7,16 @@
 
 ### 下载
 
-发布包在 [Releases](https://github.com/rexlin0624/invoice-print/releases/latest) —— 四个平台的包都由 CI 出（本机不出发布包），文件名形如 `invoice-tool_<版本>_…`：
+发布包在 [Releases](https://github.com/rexlin0624/invoice-print/releases/latest) —— 桌面端与网页版的包都由 CI 出（本机不出发布包），文件名形如 `invoice-tool_<版本>_…`：
 
 | 平台     | 文件                                                                   | 说明                                                                                     |
 | -------- | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
 | Windows  | `invoice-tool_<版本>_windows_x64-setup.exe`                             | NSIS 安装包。**未签名**，SmartScreen 会拦一次（「更多信息」→「仍要运行」）                 |
 | macOS    | `…_darwin_aarch64.dmg`（Apple 芯片）· `…_darwin_x64.dmg`（Intel）        | **未签名、未公证**：首次打开要**右键 →「打开」**，双击会被 Gatekeeper 拦下                 |
-| Linux    | `…_linux_amd64.AppImage` · `…_linux_amd64.deb`                          | 需要 `webkit2gtk-4.1`（deb 已声明依赖）。不出 rpm：RPM 规范不接受中文包名                  |
 | 网页版   | `invoice-tool_<版本>_web.zip`                                           | 解压后当静态站点托管（`python3 -m http.server` 即可），或直接用任意静态服务器；不需要安装 |
+
+> **Linux 不在支持范围**：只发布 Windows 与 macOS（原因见 `AGENTS.md` §7 —— rpm 不接受中文包名，
+> 而 deb / AppImage 换不来用户群）。Linux 上仍可以自己从源码跑，或直接用上面的网页版。
 
 包里的 **OCR 中文模型是发布流程现备的**（`pnpm ocr:prepare` —— 模型不进版本库，见 `.gitignore`），
 所以下载下来就能**离线**识别扫描件 / 图片发票，不必再配环境。
@@ -71,7 +73,7 @@
 桌面端那一笔账在 **2026-10-18 翻篇了**：`-j 1` + 起飞前自检 + 看门狗之下，本机**真的**
 跑通了 debug 构建（1 m 11 s / 峰值 744 MB）、release 打包（4 m 07 s / 峰值 1178 MB，
 产出 `.app` 31 MiB + dmg 26.3 MB），并把打包出来的 app 启动了 —— release 包内嵌前端产物，
-运行时**一条 TCP 连接都没有**。`cargo test` 与三平台发布包仍然交给 CI。
+运行时**一条 TCP 连接都没有**。`cargo test` 与 Windows / macOS 发布包仍然交给 CI。
 详见 `docs/桌面端参考.md` §8。
 
 ---

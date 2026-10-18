@@ -61,7 +61,7 @@
   看门狗自己会打印峰值与采样次数，跑完扫一眼就知道有没有逼近上限。
 - ⚠️ 本机出 release 包**可行但非常规**（实测 4 m 07 s / 1178 MB）：同一个包 CI 也能出，
   而 CI 不占你的内存。**发布包默认在 GitHub Actions 里构建**（`.github/workflows/release.yml`）；
-  要在本机出，就照上面那样明示放行。
+  要在本机出，就照上面那样明示放行。出哪些平台的包见 §7。
 - ⛔ **同一时间只允许存在一个 cargo 进程。** 有 cargo 在跑就等它结束，不要并行开第二个。
 - ⛔ 不要让 rust-analyzer 自动 `cargo build`（见 `.vscode/settings.json`，已改为 `check`）。
 - 需要降优先级时用 `taskpolicy -c background cargo check`（**是 `-c background`，不是 `-b`**）。
@@ -130,3 +130,53 @@ docs/                架构决策与解析规则参考
 - 桌面端**只补前端做不到的事**（系统对话框 / 直接读写文件 / 系统打印 / 数据目录）。
   任何解析、排版、去重逻辑出现在 `src-tauri/src/` 里都是放错了地方。
 - 改 `apps/desktop/src-tauri` 之前先读 `docs/桌面端参考.md`；本机只跑 `pnpm desktop:check`。
+
+## 7. 发布范围（Linux 不在支持范围）
+
+发布包由 CI 出：`.github/workflows/release.yml`，推 `v*` 标签触发。
+**支持两个桌面平台 + 网页版，Linux 出局**（2026-10-18 定的）：
+
+| 平台 | 产物 | 备注 |
+| --- | --- | --- |
+| Windows | `invoice-tool_<版本>_windows_x64-setup.exe` | NSIS。`bundle.targets` 是 `"all"`，这里按平台收窄成 `--bundles nsis`；**不要 msi** |
+| macOS | `…_darwin_aarch64.dmg` / `…_darwin_x64.dmg` | 两个架构都要。arm64 runner 上交叉编 x86_64，靠矩阵里的 `rustup target add` |
+| 网页版 | `invoice-tool_<版本>_web.zip` | 静态托管即可，不需要安装 |
+
+**Linux 为什么不支持**（实测过，别再去修）：
+
+- rpm 打包器直接拒绝中文包名：`failed to bundle project: invalid name "发票工具":
+  must start with an alphanumeric character, '_', or '%'`。要出 rpm 就得把产品名改成 ASCII
+  —— 那会连带改掉 `.app` 名字、安装包与开始菜单里的显示名，不值得。
+- 剩下的 deb 只有 Ubuntu 用户能直接用；AppImage 虽是发行版无关的兜底，但它 **101 MB**
+  （自带一整套 GTK/WebKit 依赖），是 macOS dmg 的四倍。两个都换不来一个真正的用户群。
+
+⚠️ CI 的 `desktop` 作业仍跑在 `ubuntu-latest` 上 —— 那只是因为**它是唯一会自动跑 `cargo test`
+的地方**（本机按 §1 不许跑）。它是「测 Rust 代码」，**不是**「支持 Linux 平台」，别顺手删掉。
+
+发布流程里几条硬规则（都是踩过的坑，别改回去）：
+
+- **附件名必须是 ASCII**：给 tauri-action 显式写 `assetNamePattern`。中文产品名传到 GitHub 会被
+  **剥掉**（`发票工具_0.1.0_x64-setup.exe` → `_0.1.0_x64-setup.exe`），而它上传前是按
+  「算出来的原名」去找同名附件来决定「先删后传」的 —— 名字对不上就变成重传，
+  **第二次发布必然 `already_exists`、整个作业失败**（`_*`、`invoice-tool-web-*` 与遗留的
+  `*_linux_*` 由 web 作业里那一步清理）。
+- **包必须自带 OCR 模型**：`public/ocr/` 是 gitignore 的（中文模型 + wasm 运行时，23 MB），
+  CI 不跑 `pnpm ocr:prepare` 的话网页包只有 3.6 MB（正常 24 MB），
+  「拖进扫描件 / 图片发票」这条主功能在发布包里直接不可用。每个作业都在打包前补这一步。
+- **`tauriScript: pnpm tauri`，不让 action 自己猜**：它按锁文件位置判断包管理器，而
+  `pnpm-lock.yaml` 在仓库根、`projectPath` 是 `apps/desktop` —— 会被猜成 npm，于是执行
+  `npm run tauri build …`，npm 会在参数前插一个 `--`（pnpm 会把那个 `--` **原样**传进脚本，
+  tauri 的 clap 就把 `--target` 当成了位置参数）。`pnpm tauri` 走 `apps/desktop` 的
+  `tauri` 脚本 → `rust.mjs` 那道闸，照旧受 §1 管。
+- **CI 里不发注解就没人看得见**：Actions 原始日志要登录才能抓（未认证
+  `/actions/jobs/{id}/logs` 直接 403），只有注解是公开的。所以 `rust.mjs` 把
+  「闸门拒绝 / 看门狗中止 / 进程非零退出」都发成 `::error::`（非零退出还带输出末尾 40 行），
+  成功时发 `::notice::` 报峰值内存。**排查发布失败先看运行页的 Annotations 区，不用登录。**
+- **CI 上跳过起飞前自检**：runner 上没有「退掉 Chrome 再回来」这个选项，实测它只会随机拦人
+  （同一次发布里 aarch64 那一刻内存够就过、x86_64 就是 2.89 GB < 2.93 GB 被拦）。
+  `rust.mjs` 在 `CI=true` 时跳过自检，**运行期看门狗照旧**，只是上限按 runner 给
+  （矩阵里的 `maxmem`：macOS 4000 MB / Windows 8000 MB；本机默认仍是 2500 MB）。
+  实测发布构建峰值：macOS 1366 / 1379 MB（Windows 采不到样 —— 那边没有 `ps`）。
+- **安装包未签名**：Windows 会吃一次 SmartScreen（「更多信息」→「仍要运行」），
+  macOS 首次要**右键 →「打开」**。这是证书与公证的问题，不是代码问题；README 的「下载」小节
+  已写明。别为了消警告去改代码。
