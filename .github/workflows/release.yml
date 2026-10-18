@@ -51,6 +51,10 @@ jobs:
   # 负责生成（`pnpm --filter @invoice-tool/web build`）—— 桌面端没有自己的界面代码。
   # ---------------------------------------------------------------------------
   desktop:
+    # 等 web 先把 Release 建出来：web 用 softprops/action-gh-release、desktop 用
+    # tauri-action，两者都会「不存在就创建」。同时跑会在首次发布时撞车
+    # （already_exists）。串起来之后 tauri-action 只需往已有 Release 传附件。
+    needs: web
     strategy:
       fail-fast: false
       matrix:
