@@ -95,12 +95,13 @@ fn hand_to_system(path: &Path) -> Result<Option<String>, String> {
 /// 从 `lp` 的输出里抠打印机名。
 /// 输出长这样：`request id is HP_LaserJet_M1136-3 (1 file(s))`，
 /// 其中 `-3` 是任务号（打印机名自己也可能带 `-`，所以只砍最后一段）。
+/// 剩下的 `_` 与 `-` 都当分隔符换成空格 —— 那两种都是 CUPS 用来代替空格的写法。
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn printer_name_of(stdout: &str) -> Option<String> {
     let rest = stdout.split("request id is").nth(1)?.trim();
     let id = rest.split_whitespace().next()?;
     let name = id.rsplit_once('-').map(|(head, _)| head).unwrap_or(id);
-    let pretty = name.replace('_', " ");
+    let pretty = name.replace(['_', '-'], " ");
     if pretty.is_empty() {
         None
     } else {
