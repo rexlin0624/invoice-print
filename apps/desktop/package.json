@@ -1,0 +1,17 @@
+{
+  "name": "@invoice-tool/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "发票工具桌面版：Tauri 外壳，前端复用 apps/web 的构建产物，Rust 只做 6 个能力模块",
+  "scripts": {
+    "dev": "node scripts/rust.mjs tauri dev",
+    "build": "node scripts/rust.mjs tauri build",
+    "icons": "node scripts/make-icon.mjs",
+    "check": "node scripts/rust.mjs cargo check --all-targets -j 2 --manifest-path src-tauri/Cargo.toml",
+    "test:rust": "node scripts/rust.mjs cargo test --manifest-path src-tauri/Cargo.toml"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.3"
+  }
+}

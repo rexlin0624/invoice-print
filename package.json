@@ -1,0 +1,29 @@
+{
+  "name": "invoice-tool",
+  "version": "0.1.0",
+  "private": true,
+  "description": "发票工具 — 本地优先的发票合并打印 / 查重 / 汇总",
+  "packageManager": "pnpm@12.3.4",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @invoice-tool/web dev",
+    "build": "pnpm --filter @invoice-tool/web build",
+    "preview": "pnpm --filter @invoice-tool/web preview",
+    "test": "pnpm -r test",
+    "e2e": "pnpm --filter @invoice-tool/web e2e",
+    "test:watch": "pnpm -r --parallel test:watch",
+    "typecheck": "pnpm -r typecheck",
+    "ocr:prepare": "pnpm --filter @invoice-tool/web ocr:prepare",
+    "desktop:dev": "pnpm --filter @invoice-tool/desktop dev",
+    "desktop:build": "pnpm --filter @invoice-tool/desktop build",
+    "desktop:icons": "pnpm --filter @invoice-tool/desktop icons",
+    "desktop:check": "pnpm --filter @invoice-tool/desktop check",
+    "format": "prettier --write \"**/*.{ts,tsx,css,json,md}\""
+  },
+  "devDependencies": {
+    "prettier": "^3.3.3",
+    "typescript": "^5.6.3"
+  }
+}

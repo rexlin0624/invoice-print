@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+# 同一分支的新提交取消旧的运行
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      # samples/ 里的真票不上库，所以这里只会跑「不含真票」的那部分用例。
+      # 真票回归在开发者本机跑（见 packages/core/test/samples.test.ts 的 describe.skipIf）。
+      - name: 类型检查
+        run: pnpm typecheck
+
+      - name: 内核回归
+        run: pnpm test
+
+      - name: 构建网页版
+        run: pnpm build
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: apps/web/dist
+
+  # ---------------------------------------------------------------------------
+  # 桌面端（apps/desktop）：Rust 侧的唯一验证点。
+  #
+  # 为什么放 CI：本机是 8 GB 内存的 MacBook Air，`cargo build` 的完整 codegen +
+  # 单进程链接实测峰值 744 MB–1.2 GB（2026-10-18），本机跑得动但默认不跑
+  # （见 AGENTS.md 第 1 节）。本机日常只用 `cargo check -j 2` 挡编译错误；
+  # 「Rust 到底编不编得过」这个问题在这里回答。
+  #
+  # 这里只做 `cargo check` + `cargo test`（不产二进制、不打安装包）——
+  # 打安装包是 release.yml 的事。
+  # ---------------------------------------------------------------------------
+  desktop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      # `tauri::generate_context!` 在**编译期**就要把前端产物嵌进去，
+      # 所以 Rust 侧编译之前必须先有 apps/web/dist（apps/desktop 复用网页版的产物）。
+      - name: 构建网页版
+        run: pnpm build
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+
+      - name: Linux 系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf libgtk-3-dev
+
+      - name: Rust 类型检查
+        run: cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml
+
+      # 6 个能力模块里的纯函数用例：百分比解码、文件名清洗、打印机名解析、文件名白名单。
+      - name: Rust 单测
+        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml

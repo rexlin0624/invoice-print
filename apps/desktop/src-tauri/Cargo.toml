@@ -1,0 +1,28 @@
+[package]
+name = "invoice-tool-desktop"
+version = "0.1.0"
+description = "发票工具桌面版（Tauri 外壳）"
+authors = ["invoice-tool"]
+license = "MIT"
+edition = "2021"
+# Tauri 2.x 需要 ≥ 1.77.2；本机是 1.99，CI 用 stable
+rust-version = "1.77.2"
+
+[lib]
+name = "invoice_tool_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+# ⚠️ 依赖纪律：这里每加一个 crate 都会让「编译本机做不了、只能靠 CI」的代价变大。
+# 严格保持在 6 个能力模块需要的范围内（见 docs/桌面端参考.md）。
+# 刻意**不用**的：
+# - tauri-plugin-fs：读写文件我们自己几行 std::fs 就够，还能省掉一整套 scope 权限模型
+# - tauri-plugin-opener：在访达里显示 / 用默认程序打开，就是一条系统命令
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

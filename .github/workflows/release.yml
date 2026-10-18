@@ -1,0 +1,98 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 网页版：产出可静态托管的 dist，附到 Release 上。
+  # ---------------------------------------------------------------------------
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+
+      - name: 打包
+        run: cd apps/web/dist && zip -r "$GITHUB_WORKSPACE/invoice-tool-web-${{ github.ref_name }}.zip" .
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: invoice-tool-web-*.zip
+          generate_release_notes: true
+
+  # ---------------------------------------------------------------------------
+  # 桌面端：M4 起启用。
+  #
+  # 为什么发布包默认在这里构建：本机是 8 GB 内存的 MacBook Air，
+  # `cargo build --release` 的完整 codegen + 单进程链接实测峰值 1178 MB（2026-10-18），
+  # 本机跑得动 —— 但那几分钟里没人踩刹车，而 CI 不占本机内存（AGENTS.md §1）。
+  # Tauri 的三平台产物默认在这里出。
+  #
+  # 前端产物由 `apps/desktop/src-tauri/tauri.conf.json` 的 `beforeBuildCommand`
+  # 负责生成（`pnpm --filter @invoice-tool/web build`）—— 桌面端没有自己的界面代码。
+  # ---------------------------------------------------------------------------
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: '--target aarch64-apple-darwin'
+          - platform: macos-latest
+            args: '--target x86_64-apple-darwin'
+          - platform: ubuntu-22.04
+            args: ''
+          # Windows 只要 NSIS 的 `-setup.exe`，不要 msi
+          # （`bundle.targets` 是 "all"，这里按平台收窄）。
+          - platform: windows-latest
+            args: '--bundles nsis'
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Linux 依赖
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf
+
+      - run: pnpm install --frozen-lockfile
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: apps/desktop
+          tagName: ${{ github.ref_name }}
+          releaseName: ${{ github.ref_name }}
+          args: ${{ matrix.args }}

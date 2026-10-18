@@ -1,0 +1,11 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+
+# pnpm 12 起，构建脚本白名单在这里配置（package.json 的 pnpm 字段已失效）。
+# ⚠️ pnpm 在报 ERR_PNPM_IGNORED_BUILDS 时会在文件末尾**自动追加**一个带
+# 「set this to true or false」注释的模板块，导致 allowBuilds 重复出现（重复键会让
+# 安装直接失败）。每次装完新依赖都要回来看一眼这个文件。
+allowBuilds:
+  esbuild: true
+  tesseract.js: true

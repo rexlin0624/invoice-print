@@ -1,0 +1,21 @@
+# 编译负载限制 —— 见 AGENTS.md 第 1 节。
+# 本机 8 GB，内存峰值出现在「完整 codegen + 单进程链接」那一步（实测 release
+# 全树 1178 MB）。所以本机默认不链接；这里只负责「万一要编译时别让峰值失控」。
+# 发布包仍然优先在 CI 构建（CI 可用 CARGO_BUILD_JOBS 覆盖本值）。
+
+[build]
+jobs = 2                     # 与本机实测安全的 `-j 2` 对齐（AGENTS.md 第 1 节）
+
+[profile.dev]
+debug = "line-tables-only"   # 砍掉 full debuginfo，显著降低编译与链接内存
+incremental = true
+
+[profile.release]
+lto = "thin"                 # 不用 fat LTO（fat LTO 的链接峰值内存最吓人）
+codegen-units = 16
+opt-level = "s"
+strip = true
+
+# 若装了 sccache，取消下面两行注释（brew install sccache）
+# [build]
+# rustc-wrapper = "sccache"

@@ -1,0 +1,12 @@
+{
+  "// 说明": "禁止 rust-analyzer 触发 cargo build；只允许 check 且限制并发。见 AGENTS.md。",
+  "rust-analyzer.check.command": "check",
+  "rust-analyzer.check.extraArgs": ["--jobs", "2"],
+  "rust-analyzer.cargo.buildScripts.enable": true,
+  "rust-analyzer.cargo.extraEnv": {
+    "CARGO_BUILD_JOBS": "2"
+  },
+  "files.eol": "\n",
+  "editor.formatOnSave": false,
+  "typescript.tsdk": "node_modules/typescript/lib"
+}

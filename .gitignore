@@ -1,0 +1,38 @@
+node_modules/
+dist/
+dist-ssr/
+*.local
+.DS_Store
+.vite/
+coverage/
+
+# Rust（桌面端，M4）
+target/
+
+# 样本：真实发票属个人数据，绝不入库
+# private/ 整个目录挡掉 —— 只按扩展名挡不够：同名 .expected.json 里
+# 有真票号码、税号、购销方名称，那些同样是个人数据。
+samples/private/
+samples/**/*.pdf
+samples/**/*ofd
+samples/**/*.OFD
+samples/**/*.xml
+samples/**/*.png
+samples/**/*.jpg
+samples/**/*.jpeg
+!samples/README.md
+!samples/.gitkeep
+
+# 本地私密样本
+.env
+.env.local
+
+# 真票样本只经 vite dev 中间件按 /__samples__ 提供（见 apps/web/vite.config.ts），
+# 不放 public/ —— 否则 Vite 会把它拷进 dist/，上传 dist 就等于公开发票。
+# 兜底：万一有人手动放进 public/，也不许入库
+apps/web/public/samples/
+
+# OCR 运行时与语言模型（约 24 MB）不入库：
+# 运行时从 node_modules 复制，模型从官方地址下载，都能重建。
+# 新克隆的机器跑一次 `pnpm ocr:prepare`（见 apps/web/scripts/prepare-ocr.mjs）。
+apps/web/public/ocr/
