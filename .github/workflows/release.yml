@@ -29,14 +29,40 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm test
+
+      # OCR 的运行时 + 中文模型（23 MB）不在版本库里（public/ocr 已 gitignore），
+      # 所以发布之前必须备一次 —— 不备的话网页包会从 37 MB 缩到 3.6 MB：
+      # 「拖进扫描件/图片发票」这条主功能在发布包里直接不可用。
+      - name: 准备离线 OCR 资源
+        run: pnpm ocr:prepare
+
       - run: pnpm build
 
       - name: 打包
-        run: cd apps/web/dist && zip -r "$GITHUB_WORKSPACE/invoice-tool-web-${{ github.ref_name }}.zip" .
+        run: |
+          cd apps/web/dist
+          zip -qr "$GITHUB_WORKSPACE/invoice-tool_${GITHUB_REF_NAME#v}_web.zip" .
+
+      # 附件名里的非 ASCII 会被 GitHub 剥掉：中文产品名会消失，`发票工具_0.1.0_x64.dmg`
+      # 会变成 `_0.1.0_x64.dmg`。桌面端现在统一用 ASCII 命名（见 desktop 作业的
+      # assetNamePattern），这里顺手把老名字清掉 —— 第二次之后再跑就是空操作。
+      # 不清的话，tauri-action 按「算出来的名字」去找同名附件（找不到）→ 直接传 →
+      # already_exists，整个作业失败。
+      - name: 清理陈旧命名的附件
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' 2>/dev/null \
+            | grep -E '^_|^invoice-tool-web-' \
+            | while read -r name; do
+                echo "删除陈旧附件：$name"
+                gh release delete-asset "$GITHUB_REF_NAME" "$name" --yes
+              done || true
 
       - uses: softprops/action-gh-release@v3
         with:
-          files: invoice-tool-web-*.zip
+          files: invoice-tool_*_web.zip
           generate_release_notes: true
 
   # ---------------------------------------------------------------------------
@@ -114,6 +140,11 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # 发布包要能识别扫描件/图片发票：OCR 运行时与中文模型不在版本库里，
+      # 得在打包前备好（见 web 作业里那一步的说明）。
+      - name: 准备离线 OCR 资源
+        run: pnpm ocr:prepare
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -125,6 +156,11 @@ jobs:
           # （pnpm 会把那个 `--` 原样传进脚本，tauri 的 clap 会把 --target 当位置参数）。
           # `pnpm tauri …` 走的是 apps/desktop 的 `tauri` 脚本 → rust.mjs 那道闸。
           tauriScript: pnpm tauri
+          # 附件名必须自己给：中文产品名 `发票工具` 传到 GitHub 会被剥掉，
+          # `发票工具_0.1.0_x64-setup.exe` 变成 `_0.1.0_x64-setup.exe`；更要命的是
+          # 上传前它按「算出来的原名」找同名附件来决定先删后传 —— 名字对不上就
+          # 变成重传，第二次跑必然 `already_exists` 而整个作业失败。
+          assetNamePattern: 'invoice-tool_[version]_[platform]_[arch][setup][ext]'
           tagName: ${{ github.ref_name }}
           releaseName: ${{ github.ref_name }}
           args: ${{ matrix.args }}

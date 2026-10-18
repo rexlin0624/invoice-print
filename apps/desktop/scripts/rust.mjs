@@ -59,6 +59,8 @@ const PREFLIGHT_MIN_MB = Number(process.env.RUST_MIN_FREE_MB ?? 3000);
 const SAMPLE_FAST_MS = 100;
 const SAMPLE_SLOW_MS = 2000;
 const FAST_WINDOW_MS = 5000;
+/** 失败时把子进程输出的末尾这么多行发成注解（CI 日志要登录才看得到） */
+const TAIL_LINES = 40;
 
 const here = dirname(fileURLToPath(import.meta.url));
 const tool = process.argv[2];
@@ -120,7 +122,10 @@ run(command, commandArgs);
 /** 起进程 + 看门狗。整棵进程树放一个进程组里，越界时能一次杀干净。 */
 function run(command, argv) {
   const child = spawn(command, argv, {
-    stdio: 'inherit',
+    // stdout/stderr 走管道是为了**留一份末尾输出**（见下面 tail）：
+    // CI 里 cargo / tauri 的报错原文在日志里，而日志要登录才能看 —— 失败时
+    // 把最后几行发成注解，就变成了不用登录也看得到的东西。
+    stdio: ['inherit', 'pipe', 'pipe'],
     cwd: resolve(here, '..'),
     detached: process.platform !== 'win32',
     // 只把绝对路径喂给 spawn 不够：`tauri` 是 node 程序，它自己按**名字**去 spawn
@@ -128,6 +133,18 @@ function run(command, argv) {
     // 「failed to run 'cargo metadata' … No such file or directory」。
     env: { ...process.env, PATH: pathWithCargo() },
   });
+
+  const tail = [];
+  const forward = (chunk, out) => {
+    out.write(chunk);
+    for (const line of chunk.toString('utf8').split('\n')) {
+      if (!line.trim()) continue;
+      tail.push(line);
+      if (tail.length > TAIL_LINES) tail.shift();
+    }
+  };
+  child.stdout?.on('data', (chunk) => forward(chunk, process.stdout));
+  child.stderr?.on('data', (chunk) => forward(chunk, process.stderr));
 
   let peakMb = 0;
   let samples = 0;
@@ -191,6 +208,12 @@ function run(command, argv) {
     // 「这次打包峰值多少」本来就该是一眼能看到的东西。
     if (peak !== '太快，没采到样') {
       annotate('notice', `${tool} 进程树峰值内存 ${peak}（上限 ${MAX_TREE_MB} MB）`);
+    }
+    // 失败时把末尾输出一并发成注解：否则 CI 上只能看到 tauri-action 那句
+    // 「Command … failed with exit code 1」，而真正的原因（编译报错 / 打包报错）
+    // 埋在登录才能看的日志里。
+    if (code) {
+      annotate('error', `${tool} 退出码 ${code}，输出末尾：\n${tail.join('\n')}`);
     }
     process.exit(code ?? 1);
   });
