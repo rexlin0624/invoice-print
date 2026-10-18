@@ -1,8 +1,8 @@
 /**
  * 二维码解析与交叉校验。
  *
- * 两条 `QUAN_DIAN` 是从真实数电票上实解出来的原文（见 samples/private/*.expected.json），
- * 不是编的 —— 字段位置就是照它们定的。
+ * 下面两条 payload 是**按真实数电票实解出来的形状改写的合成值** —— 字段位置照真票定，
+ * 但票号 / 金额都不是真值（真实原文只在本机 samples/private/*.expected.json，不入库）。
  *
  * 解码本身（图像 → 字符串）需要 WASM + canvas，在浏览器里做，
  * 由 `apps/web/src/lib/qr.ts` 负责；这里只测「字符串 → 字段」这一半。
@@ -18,13 +18,13 @@ import {
   parseQrPayload,
 } from '../src/parse/qr';
 
-/** 成品油合成样本 A 票面左上角二维码的实解原文 */
+/** 成品油合成样本 A 票面左上角二维码的形状（合成 payload） */
 const ZHONGSHIHUA = '01,32,,12345678901234567890,55.58,20260619,,300A';
-/** 通行费合成样本 B 的实解原文 */
+/** 通行费合成样本 B 的形状（合成 payload） */
 const LULU = '01,32,,10987654321098765432,19.87,20260622,,6283';
 
 describe('parseQrPayload', () => {
-  it('解出真票的号码 / 价税合计 / 开票日期', () => {
+  it('解出号码 / 价税合计 / 开票日期', () => {
     const p = parseQrPayload(ZHONGSHIHUA);
     expect(p).toBeDefined();
     expect(p!.invoiceNo).toBe('12345678901234567890');
