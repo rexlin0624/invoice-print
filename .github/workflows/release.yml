@@ -14,14 +14,14 @@ jobs:
   web:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # 版本取自 package.json 的 packageManager（pnpm@12.3.4）。
       # 不要在这里再写 `version:` —— action 要求两者精确相等，否则报
       # "Multiple versions of pnpm specified"（12 ≠ 12.3.4）。
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -67,14 +67,14 @@ jobs:
             args: '--bundles nsis'
     runs-on: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # 版本取自 package.json 的 packageManager（pnpm@12.3.4）。
       # 不要在这里再写 `version:` —— action 要求两者精确相等，否则报
       # "Multiple versions of pnpm specified"（12 ≠ 12.3.4）。
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
