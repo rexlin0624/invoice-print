@@ -87,10 +87,12 @@ if (!safe && !forced) {
 
 // 这台机器上 cargo 可能不在 PATH 里；macOS 上顺手把优先级压到 background，
 // 内存紧张时系统先收它，而不是先收你的编辑器。
-const binary = tool === 'cargo' ? findCargo() : findTauri();
+// `cargo` 直接跑二进制；`tauri` 是 node + 它的 JS 入口（理由见 findTauri）。
+const spec = tool === 'cargo' ? { bin: findCargo(), prefix: [] } : findTauri();
 const launcher = taskPolicy();
-const command = launcher ?? binary;
-const commandArgs = launcher ? ['-c', 'background', binary, ...args] : args;
+const command = launcher ?? spec.bin;
+const argvs = [...spec.prefix, ...args];
+const commandArgs = launcher ? ['-c', 'background', spec.bin, ...argvs] : argvs;
 
 // ─────────────────────────── 起飞前自检 ───────────────────────────
 // 看门狗（run() 里那个）是**事后**刹车：越界才杀。可链接类命令会在几分钟里涨到 1 GB 上下，
@@ -167,14 +169,14 @@ function run(command, argv) {
 
   child.on('error', (err) => {
     clearTimeout(timer);
-    refuse(`调不起 ${command}：${err.message}`);
+    refuse(`调不起 ${tool}：${err.message}`);
   });
 
   child.on('exit', (code, signal) => {
     clearTimeout(timer);
     if (killed) return; // 已经在看门狗那条路上退出了
     if (signal) {
-      console.error(`[rust] ${command} 被信号 ${signal} 结束`);
+      console.error(`[rust] ${tool} 被信号 ${signal} 结束`);
       process.exit(1);
     }
     const peak = samples === 0 ? '太快，没采到样' : `${Math.round(peakMb)} MB`;
@@ -393,10 +395,19 @@ function findCargo() {
   return 'cargo';
 }
 
-/** `tauri` 由 @tauri-apps/cli 提供，pnpm 把它链在 apps/desktop/node_modules/.bin/ */
+/**
+ * `tauri` 由 @tauri-apps/cli 提供，pnpm 把它链在 apps/desktop/node_modules/.bin/。
+ * 但 `.bin` 里的东西在 Windows 上跑不起来：pnpm 生成的是 sh 脚本（`tauri`，不是可执行
+ * 映像）与 `tauri.cmd`（Node 自 CVE-2024-27980 起要求 `shell: true` 才肯 spawn）。
+ * 所以优先用 **node 跑它的 JS 入口**（`bin` 字段就是 `./tauri.js`）——三平台一致，
+ * 也不依赖 `.bin` 在不在 PATH 上。package 的入口是它按平台去找 `tauri.<target>.node`。
+ * 找不到才退回 .bin shim，再退回 PATH。
+ */
 function findTauri() {
-  const local = resolve(here, '..', 'node_modules', '.bin', 'tauri');
-  return existsSync(local) ? local : 'tauri';
+  const entry = resolve(here, '..', 'node_modules', '@tauri-apps', 'cli', 'tauri.js');
+  if (existsSync(entry)) return { bin: process.execPath, prefix: [entry] };
+  const shim = resolve(here, '..', 'node_modules', '.bin', 'tauri');
+  return { bin: existsSync(shim) ? shim : 'tauri', prefix: [] };
 }
 
 /**

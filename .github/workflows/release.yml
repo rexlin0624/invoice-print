@@ -34,7 +34,7 @@ jobs:
       - name: 打包
         run: cd apps/web/dist && zip -r "$GITHUB_WORKSPACE/invoice-tool-web-${{ github.ref_name }}.zip" .
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: invoice-tool-web-*.zip
           generate_release_notes: true
@@ -61,14 +61,18 @@ jobs:
         include:
           - platform: macos-latest
             args: '--target aarch64-apple-darwin'
+            targets: 'aarch64-apple-darwin'
           - platform: macos-latest
             args: '--target x86_64-apple-darwin'
+            targets: 'x86_64-apple-darwin'
           - platform: ubuntu-22.04
             args: ''
+            targets: ''
           # Windows 只要 NSIS 的 `-setup.exe`，不要 msi
           # （`bundle.targets` 是 "all"，这里按平台收窄）。
           - platform: windows-latest
             args: '--bundles nsis'
+            targets: ''
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v7
@@ -85,6 +89,12 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: 交叉编译目标
+        # tauri-action 不管装 target（它只负责打包与上传），而 arm64 的 macOS runner
+        # 上编 x86_64（或反过来）必须先 `rustup target add`，否则报「target may not be installed」。
+        if: matrix.targets != ''
+        run: rustup target add ${{ matrix.targets }}
+
       - name: Linux 依赖
         if: matrix.platform == 'ubuntu-22.04'
         run: |
@@ -99,6 +109,12 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: apps/desktop
+          # 必须写死，不能让 action 自己猜：它按锁文件位置判断包管理器，而我们的
+          # pnpm-lock.yaml 在仓库根、projectPath 是 apps/desktop —— 第一次跑就被猜成了
+          # npm，于是执行 `npm run tauri build …`，而 npm 会在参数前插一个 `--`
+          # （pnpm 会把那个 `--` 原样传进脚本，tauri 的 clap 会把 --target 当位置参数）。
+          # `pnpm tauri …` 走的是 apps/desktop 的 `tauri` 脚本 → rust.mjs 那道闸。
+          tauriScript: pnpm tauri
           tagName: ${{ github.ref_name }}
           releaseName: ${{ github.ref_name }}
           args: ${{ matrix.args }}
