@@ -156,6 +156,12 @@ function run(command, argv) {
       killTree(child);
       console.error(`\n[rust] ⛔ 已中止：${killed}`);
       console.error('[rust] 宁可这次检查失败，也不要机器重启。要放宽上限：RUST_MAX_MEMORY_MB / RUST_MIN_FREE_RATIO');
+      annotate(
+        'error',
+        `看门狗已中止 ${tool}：${killed}。` +
+          `（上限 RUST_MAX_MEMORY_MB=${MAX_TREE_MB} MB / RUST_MIN_FREE_RATIO=${MIN_FREE_RATIO}，` +
+          '本机是给 8 GB 的笔记本定的线，CI runner 内存更大）',
+      );
       setTimeout(() => process.exit(1), 200);
       return;
     }
@@ -181,6 +187,11 @@ function run(command, argv) {
     }
     const peak = samples === 0 ? '太快，没采到样' : `${Math.round(peakMb)} MB`;
     console.error(`[rust] 峰值内存 ${peak}（上限 ${MAX_TREE_MB} MB，采样 ${samples} 次）`);
+    // 这一行平时只在日志里（要登录才看得到）；发成注解之后 CI 页面上直接可见 ——
+    // 「这次打包峰值多少」本来就该是一眼能看到的东西。
+    if (peak !== '太快，没采到样') {
+      annotate('notice', `${tool} 进程树峰值内存 ${peak}（上限 ${MAX_TREE_MB} MB）`);
+    }
     process.exit(code ?? 1);
   });
 }
@@ -439,5 +450,20 @@ function pad(text, width) {
 
 function refuse(message) {
   console.error(`[rust] ${message}`);
+  annotate('error', message);
   process.exit(1);
+}
+
+/**
+ * 在 GitHub Actions 里额外发一条注解。
+ *
+ * 为什么值得专门写：Actions 的**原始日志要登录才能看**（未认证抓 `/actions/jobs/{id}/logs`
+ * 直接 403），而 `annotations_partial` 是公开的。CI 里拦住我们的往往就是下面这两条
+ * 「看门狗/自检」的判断，只写进 stderr 等于没人看得见 —— 失败原因必须走注解这条线。
+ * 多行/百分号要转义（注解体里换行是 `%0A`、`%` 要写成 `%25`）。
+ */
+function annotate(level, message) {
+  if (process.env.GITHUB_ACTIONS !== 'true') return;
+  const body = message.replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A').trim();
+  console.log(`::${level}::${body}`);
 }

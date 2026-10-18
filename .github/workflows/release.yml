@@ -59,21 +59,31 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # maxmem 是给 rust.mjs 看门狗的上限（RUST_MAX_MEMORY_MB）。本机默认 2500 MB 是
+          # 按 8 GB 笔记本定的（AGENTS.md §1）；CI runner 内存大得多，而且 Linux 的 GNU ld
+          # 做 thin-LTO 链接比 macOS 的 ld64 吃内存 —— 沿用 2500 会把链接阶段误杀。
+          # 只放宽上限，不撤看门狗（跑飞了仍然会刹）。
           - platform: macos-latest
             args: '--target aarch64-apple-darwin'
             targets: 'aarch64-apple-darwin'
+            maxmem: 4000
           - platform: macos-latest
             args: '--target x86_64-apple-darwin'
             targets: 'x86_64-apple-darwin'
+            maxmem: 4000
           - platform: ubuntu-22.04
             args: ''
             targets: ''
+            maxmem: 8000
           # Windows 只要 NSIS 的 `-setup.exe`，不要 msi
           # （`bundle.targets` 是 "all"，这里按平台收窄）。
           - platform: windows-latest
             args: '--bundles nsis'
             targets: ''
+            maxmem: 8000
     runs-on: ${{ matrix.platform }}
+    env:
+      RUST_MAX_MEMORY_MB: ${{ matrix.maxmem }}
     steps:
       - uses: actions/checkout@v7
 
