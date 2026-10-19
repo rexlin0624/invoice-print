@@ -62,6 +62,11 @@
 - ⚠️ 本机出 release 包**可行但非常规**（实测 4 m 07 s / 1178 MB）：同一个包 CI 也能出，
   而 CI 不占你的内存。**发布包默认在 GitHub Actions 里构建**（`.github/workflows/release.yml`）；
   要在本机出，就照上面那样明示放行。出哪些平台的包见 §7。
+- 🔁 **换壳不是解法。** 2026-10-19 把真实前端装进 MyGo v0.5.5 实测过：六项 webview 能力
+  （pdfjs module worker / zxing wasm / tesseract / IndexedDB / 拖放 / `lp`）全过，
+  但结论仍是**不换** —— 构建的痛由 CI 与本节的纪律解决；换框架既不解决签名，
+  又要重写 6 个能力模块与 IPC 契约。记录见 `spikes/mygo-shell/` 与
+  `docs/桌面端参考.md` §10。复查条件：MyGo 到 1.0 或 2027-04。
 - ⛔ **同一时间只允许存在一个 cargo 进程。** 有 cargo 在跑就等它结束，不要并行开第二个。
 - ⛔ 不要让 rust-analyzer 自动 `cargo build`（见 `.vscode/settings.json`，已改为 `check`）。
 - 需要降优先级时用 `taskpolicy -c background cargo check`（**是 `-c background`，不是 `-b`**）。
