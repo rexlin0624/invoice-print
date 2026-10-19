@@ -1009,3 +1009,113 @@ button { font: inherit; color: inherit; }
   .page-body { padding: 0 14px 16px; }
   .page-foot { padding: 10px 14px; }
 }
+
+/* ------------------------------------------------- 校正字段 / 原图查看 */
+/*
+ * 两个弹层共用 `.modal` 的定位，各自加宽：
+ * `correct` 要放下 13 个字段 + 明细表，`viewer` 要尽量把原图摊开。
+ */
+
+.modal.correct { width: min(760px, calc(100vw - 40px)); max-height: min(86vh, 820px); }
+.modal.viewer { width: min(920px, calc(100vw - 40px)); max-height: min(90vh, 900px); }
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 10px 14px;
+  margin-top: 6px;
+}
+.field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.field-label {
+  display: flex; align-items: baseline; gap: 6px;
+  font-size: 12.5px; color: var(--text-dim);
+}
+.field-hint { color: var(--muted); font-size: 11px; }
+.field-hint.warn { color: var(--warn); }
+.field input, .field select {
+  font: inherit;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  color: inherit;
+}
+.field input:focus, .field select:focus { outline: 2px solid var(--primary-ring); border-color: var(--primary); }
+
+.item-edit {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+/* 已人工校正的小标记：绿调，与「专票」的绿区分不冲突（那个是 chip-special） */
+.chip-corrected { background: var(--ok-bg); color: var(--ok); }
+
+.check-inline { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; }
+
+.viewer-stage {
+  flex: 1;
+  min-height: 240px;
+  margin-top: 10px;
+  padding: 8px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  text-align: center;
+}
+.viewer-img {
+  max-width: 100%;
+  height: auto;
+  background: #fff;
+  box-shadow: var(--shadow-sm);
+}
+
+/* ---------------------------------------------------- 本次导入的汇总条 */
+
+.summary-bar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-2);
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.summary-bar b { color: var(--text); }
+.summary-bar .sep { color: var(--line-strong); }
+.summary-bar .spacer { margin-left: auto; }
+
+/* ------------------------------------------------------------ 排版预设 */
+
+.preset-list { list-style: none; margin: 6px 0 0; padding: 0; }
+.preset-list li {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+}
+.preset-list li:last-child { border-bottom: 0; }
+.preset-list li > div { flex: 1; min-width: 0; }
+.preset-list li b { display: block; font-size: 13px; }
+.preset-list li .sub { display: block; color: var(--muted); font-size: 11.5px; }
+
+/* 预览里每张票角上的「看原图」：默认半透明，悬停整张票时浮出来 */
+.slot-zoom {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 22px; height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: rgba(17, 24, 39, 0.6);
+  color: #fff;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.slot:hover .slot-zoom, .slot-zoom:focus-visible { opacity: 1; }

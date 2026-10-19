@@ -189,3 +189,22 @@ describe('tableToCsv', () => {
     expect(csv.startsWith('"仅 2026 年 6 月"')).toBe(true);
   });
 });
+
+describe('CSV：公式注入与长数字串', () => {
+  it('以 = + - @ 开头的文本被中和，普通文本不受影响', () => {
+    const table = buildExportTable([
+      invoice({ sellerName: '=HYPERLINK("http://evil","点我")' }),
+      invoice({ sellerName: '上海某某贸易有限公司' }),
+    ]);
+    const csv = tableToCsv(table);
+    expect(csv).toContain("'=HYPERLINK");
+    expect(csv).not.toMatch(/"=HYPERLINK/);
+    expect(csv).toContain('上海某某贸易有限公司');
+  });
+
+  it('20 位号码仍然是保护起来的文本，不会被中和成别的样子', () => {
+    const table = buildExportTable([invoice({ invoiceNo: '12345678901234567890' })]);
+    // 转义之后写进 CSV 的样子：Excel 打开是文本，不是 1.2346E+19
+    expect(tableToCsv(table)).toContain('"=""12345678901234567890"""');
+  });
+});

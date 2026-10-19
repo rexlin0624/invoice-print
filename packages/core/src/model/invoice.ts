@@ -189,6 +189,142 @@ export function makeIssue(
 }
 
 /**
+ * 人工校正的补丁。**三态**，和 `IntakeItem.crop` 一样的规矩：
+ *
+ * - 键不出现 / `undefined` = 别动这个字段（没提到它）
+ * - `null` = 清空（这个字段确实没有值）
+ * - 其它 = 写死成这个值
+ *
+ * 为什么要三态：只给「有值」的字段，就没法区分「用户没改」和「用户确认这里就是空的」——
+ * 而「票上没有这个字段」本身就是一个结论，不能被旧值覆盖回去。
+ */
+export interface CorrectPatch {
+  kind?: InvoiceKind;
+  invoiceNo?: string | null;
+  invoiceCode?: string | null;
+  issueDate?: string | null;
+  sellerName?: string | null;
+  sellerTaxId?: string | null;
+  buyerName?: string | null;
+  buyerTaxId?: string | null;
+  amount?: Cents | null;
+  tax?: Cents | null;
+  total?: Cents | null;
+  totalInWords?: string | null;
+  checkCode?: string | null;
+  items?: InvoiceItem[];
+  /** 要打印的源文件页下标（0 基）。整套替换 */
+  skipPages?: number[];
+}
+
+/** 补丁里能出现的字段名（`items`/`skipPages` 是整体替换，不在 provenance 的白名单外） */
+const PATCH_FIELDS = [
+  'kind',
+  'invoiceNo',
+  'invoiceCode',
+  'issueDate',
+  'sellerName',
+  'sellerTaxId',
+  'buyerName',
+  'buyerTaxId',
+  'amount',
+  'tax',
+  'total',
+  'totalInWords',
+  'checkCode',
+  'items',
+  'skipPages',
+] as const;
+
+/** 归一化后比较「号码有没有真的变」（空串与 undefined 视为同一件事） */
+function sameText(a: string | undefined, b: string | null | undefined): boolean {
+  const left = (a ?? '').trim();
+  const right = (b ?? '').trim();
+  return left === right;
+}
+
+/** 按白名单字段名写入/删除。白名单是 `PATCH_FIELDS`，类型由调用点保证。 */
+function setField(target: Invoice, field: keyof Invoice, value: unknown): void {
+  (target as unknown as Record<string, unknown>)[field] = value;
+}
+
+function clearField(target: Invoice, field: keyof Invoice): void {
+  delete (target as unknown as Record<string, unknown>)[field];
+}
+
+/**
+ * 把人工校正应用到一个 `Invoice` 上，返回**新的** Invoice（不改原对象）。
+ *
+ * 三件事一起做，缺一个都会留下隐患：
+ * 1. 写值，并把这些字段的出处标成 `manual`（可信度 1）—— 于是诊断面板里能看出
+ *    「这个值是你看过的」，而不是永远显示「来自 PDF 文字层 0.85」。
+ * 2. **号码改了就把校验码丢掉**：老票的校验码是「号码 + 代码 + 金额 + 日期」算出来的，
+ *    号码一改，那个校验码必然对不上；继续留着会让校验报 `tax-id-invalid` 之类的假警。
+ *    本次同时给了新校验码时不丢（调用方明确写了，就以调用方为准）。
+ * 3. 丢掉**针对这些字段**的解析问题（如「二维码与票面不一致，请人工核对」）——
+ *    人工已经核过了，再挂着这条提示只会让红色警告永远消不掉。
+ *    不带 `field` 的问题（解析失败、没文字层……）原样保留。
+ */
+export function applyCorrection(invoice: Invoice, patch: CorrectPatch): Invoice {
+  const next: Invoice = { ...invoice, provenance: { ...invoice.provenance } };
+  const provenance = next.provenance;
+  const touched = new Set<keyof Invoice>();
+
+  for (const field of PATCH_FIELDS) {
+    const value = patch[field];
+    if (value === undefined) continue; // 没提到它
+    touched.add(field as keyof Invoice);
+    // 空串等同于「清空」：输入框清干净就是「这张票上确实没有」，不该留下一个空壳值
+    if (value === null || (typeof value === 'string' && value.trim() === '')) {
+      clearField(next, field as keyof Invoice);
+      delete provenance[field as keyof Invoice];
+      continue;
+    }
+    setField(next, field as keyof Invoice, typeof value === 'string' ? value.trim() : value);
+    provenance[field as keyof Invoice] = { source: 'manual', confidence: SOURCE_CONFIDENCE.manual };
+  }
+
+  // 号码变了 → 旧校验码作废（除非本次一并给了新校验码）
+  const noChanged =
+    patch.invoiceNo !== undefined && !sameText(invoice.invoiceNo, patch.invoiceNo);
+  if (noChanged && patch.checkCode === undefined) {
+    delete next.checkCode;
+    delete provenance.checkCode;
+    touched.add('checkCode');
+  }
+
+  if (touched.size > 0) {
+    next.issues = invoice.issues.filter((issue) => !(issue.field && touched.has(issue.field)));
+  }
+  return next;
+}
+
+/** 哪些字段是人工改过的 */
+export function correctedFields(invoice: Pick<Invoice, 'provenance'>): Array<keyof Invoice> {
+  return (Object.keys(invoice.provenance) as Array<keyof Invoice>).filter(
+    (key) => invoice.provenance[key]?.source === 'manual',
+  );
+}
+
+/** 这张票有人工校正过吗（UI 上给一个小标记） */
+export function isCorrected(invoice: Pick<Invoice, 'provenance'>): boolean {
+  return correctedFields(invoice).length > 0;
+}
+
+/**
+ * 这张票「算多少钱」。
+ *
+ * 唯一口径，内核与两个外壳都从这里取：优先价税合计，其次「不含税 + 税额」。
+ * 关键是**不要**在金额缺失时返回 0 —— 那会把「没识别出来」混进「这张票是 0 元」，
+ * 汇总时会静默漏账。拿不到就 undefined，由调用方决定怎么显示、怎么计数。
+ */
+export function invoiceTotal(invoice: Pick<Invoice, 'total' | 'amount' | 'tax'>): Cents | undefined {
+  if (invoice.total !== undefined) return invoice.total;
+  if (invoice.amount !== undefined && invoice.tax !== undefined) return invoice.amount + invoice.tax;
+  return undefined;
+}
+
+/**
  * 实际要打印的**源文件页下标**（0 基，顺序即打印顺序）。
  *
  * 排版与打印都按「第几张要打的页」说话（`Slot.page` 是这个序号），

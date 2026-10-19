@@ -28,3 +28,4 @@ export * from './dedupe/index';
 export * from './layout/index';
 export * from './combine/index';
 export * from './export/invoices';
+export * from './export/summary';

@@ -1,5 +1,5 @@
 import type { Invoice, Issue } from '@invoice-tool/core';
-import { worstLevel } from '@invoice-tool/core';
+import { correctedFields, isCorrected, worstLevel } from '@invoice-tool/core';
 import { useState } from 'react';
 
 import { displayTotal, kindChipClass, kindLabel, money } from '../lib/format';
@@ -8,6 +8,7 @@ import { saveText } from '../lib/save';
 import type { Mark } from '../state/store';
 import { tally, useStore } from '../state/store';
 import { AddButton } from './AddButton';
+import { PageViewer, viewerSourceOf } from './PageViewer';
 import { CheckIcon, InvoiceIcon, WarnIcon } from './icons';
 
 const FIELD_LABEL: Partial<Record<keyof Invoice, string>> = {
@@ -142,6 +143,7 @@ interface RowProps {
 }
 
 function ItemRow({ item, issues, needless, mark, selected, diagOpen, onToggleDiag }: RowProps) {
+  const [viewing, setViewing] = useState(false);
   const { dispatch } = useStore();
   const inv = item.invoice;
   const level = worstLevel(issues);
@@ -173,6 +175,11 @@ function ItemRow({ item, issues, needless, mark, selected, diagOpen, onToggleDia
           {/* 业务标签与票种同名时不重复显示（如通行费票既是 toll 又带「通行费」业务标签） */}
           {inv.businessTag && inv.businessTag !== kindLabel(inv.kind) && (
             <span className="chip">{inv.businessTag}</span>
+          )}
+          {isCorrected(inv) && (
+            <span className="chip chip-corrected" title={`手工填写了 ${correctedFields(inv).length} 个字段`}>
+              已校正
+            </span>
           )}
           <span>{inv.issueDate ?? '日期未识别'}</span>
           <span className="file-note" title={`发票号码 ${inv.invoiceNo ?? '未识别'}`}>
@@ -269,6 +276,18 @@ function ItemRow({ item, issues, needless, mark, selected, diagOpen, onToggleDia
           <div className="diag-actions">
             <button
               type="button"
+              className="btn btn-sm btn-primary"
+              onClick={() => dispatch({ type: 'correcting', id: item.id })}
+            >
+              {inv.invoiceNo ? '校正字段' : '补录号码'}
+            </button>
+            {item.visual !== 'none' && (
+              <button type="button" className="btn btn-sm" onClick={() => setViewing(true)}>
+                看原图
+              </button>
+            )}
+            <button
+              type="button"
               className="btn btn-sm"
               onClick={() => dispatch({ type: 'skip', id: item.id, skip: !needless })}
             >
@@ -286,6 +305,10 @@ function ItemRow({ item, issues, needless, mark, selected, diagOpen, onToggleDia
               移除
             </button>
           </div>
+
+          {viewing && (
+            <PageViewer item={viewerSourceOf(item)} onClose={() => setViewing(false)} />
+          )}
         </div>
       )}
     </div>

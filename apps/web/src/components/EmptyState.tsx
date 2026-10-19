@@ -37,7 +37,7 @@ export function EmptyState({ dragOver }: Props) {
           把发票拖到这里，或 <span className="hot">点击选择文件</span>
         </span>
         <span className="formats">
-          支持 PDF · OFD · XML · ZIP 压缩包，可一次拖入多个
+          支持 PDF · OFD · XML · ZIP 压缩包，可一次拖入多个；也能直接 Ctrl/⌘+V 粘贴截图
         </span>
       </button>
 

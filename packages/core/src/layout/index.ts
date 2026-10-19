@@ -25,6 +25,9 @@ const MARGIN: Record<Margin, number> = {
   wide: mm(20),
 };
 
+/** 页边距的实际点数。导出给「校准测试页」用 —— 那边要画出票能占的范围，不能自己再算一遍 */
+export const MARGIN_PT: Record<Margin, number> = MARGIN;
+
 /** 槽位之间的间隙 */
 const GAP = mm(3);
 
@@ -49,6 +52,25 @@ export interface LayoutSettings {
   cropWhitespace: boolean;
   /** 黑白打印（栅格化 + 阈值化），省墨、也更容易被老打印机吃下去 */
   blackWhite: boolean;
+  /**
+   * 打印偏移（mm，正值 = 往右 / 往下）。
+   *
+   * 为什么需要它：打印机的实际成像区常常与纸边有几毫米的差，纸的走位也会偏；
+   * 排出来的版面没错，打出来却偏出裁切线。让用户用「校准测试页」量出偏差、
+   * 填进这里，比让他去改打印机的驱动设置靠谱得多。
+   */
+  offsetXMm: number;
+  offsetYMm: number;
+}
+
+/** 校准偏移的上限（mm）。超过这个数说明不是校准问题，是选错纸型了 */
+export const OFFSET_LIMIT_MM = 20;
+
+/** 偏移归一化：非数字/越界一律夹到合法范围，绝不让脏设置把票推出纸外 */
+export function clampOffsetMm(value: unknown): number {
+  const n = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(-OFFSET_LIMIT_MM, Math.min(OFFSET_LIMIT_MM, Math.round(n * 10) / 10));
 }
 
 export const DEFAULT_LAYOUT_SETTINGS: LayoutSettings = {
@@ -65,7 +87,55 @@ export const DEFAULT_LAYOUT_SETTINGS: LayoutSettings = {
   rasterCompat: false,
   cropWhitespace: false,
   blackWhite: false,
+  offsetXMm: 0,
+  offsetYMm: 0,
 };
+
+/**
+ * 把来路不明的设置收敛成合法值。
+ *
+ * 输入可能是：上一个版本写的 localStorage、用户手改过的 JSON、或者别的页面塞进来的半截对象。
+ * 早先这里只是 `{ ...默认, ...存下来的 }` —— 于是 `perPage: 3`（甚至 `perPage: "4"`）
+ * 会一路走到排版里，`gridFor` 落到「不是 1 也不是 2」的分支，一张 A4 只摆一张票，
+ * 而用户看到的设置写着「每页 4 张」。**读设置的地方必须收敛，而不是信它。**
+ */
+export function normalizeLayoutSettings(raw: unknown): LayoutSettings {
+  const source = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>;
+  const pick = <T>(value: unknown, allowed: readonly T[], fallback: T): T =>
+    allowed.some((option) => option === value) ? (value as T) : fallback;
+  const flag = (value: unknown, fallback: boolean): boolean =>
+    typeof value === 'boolean' ? value : fallback;
+  /**
+   * 只认数字与「长得像数字的字符串」（`<select>` 的 value 是字符串）。
+   * 刻意不用 `Number(value)` 一把梭：`Number(true)` 是 1、`Number([])` 是 0 ——
+   * 那会让「开关被写进了 perPage 这个键」变成一张 A4 只摆一张票。
+   */
+  const num = (value: unknown, fallback: number): number => {
+    if (typeof value === 'number') return Number.isFinite(value) ? value : fallback;
+    if (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))) {
+      return Number(value);
+    }
+    return fallback;
+  };
+  const d = DEFAULT_LAYOUT_SETTINGS;
+
+  return {
+    perPage: pick(num(source.perPage, d.perPage), [1, 2, 4] as const, d.perPage) as PerPage,
+    paper: 'A4',
+    orientation: pick(source.orientation, ['auto', 'portrait', 'landscape'] as const, d.orientation),
+    margin: pick(source.margin, ['narrow', 'normal', 'wide'] as const, d.margin),
+    groupTickets: flag(source.groupTickets, d.groupTickets),
+    separateTaxType: flag(source.separateTaxType, d.separateTaxType),
+    allowRotation: flag(source.allowRotation, d.allowRotation),
+    cutLines: flag(source.cutLines, d.cutLines),
+    pageNumbers: flag(source.pageNumbers, d.pageNumbers),
+    rasterCompat: flag(source.rasterCompat, d.rasterCompat),
+    cropWhitespace: flag(source.cropWhitespace, d.cropWhitespace),
+    blackWhite: flag(source.blackWhite, d.blackWhite),
+    offsetXMm: clampOffsetMm(source.offsetXMm),
+    offsetYMm: clampOffsetMm(source.offsetYMm),
+  };
+}
 
 export interface LayoutItem {
   id: string;
@@ -182,7 +252,7 @@ export function chooseOrientation(
   items: readonly LayoutItem[],
   settingsInput: Partial<LayoutSettings> = {},
 ): 'portrait' | 'landscape' {
-  const settings: LayoutSettings = { ...DEFAULT_LAYOUT_SETTINGS, ...settingsInput };
+  const settings = normalizeLayoutSettings(settingsInput);
   if (settings.orientation !== 'auto') return settings.orientation;
   const margin = MARGIN[settings.margin];
   const p = averageScale(items, settings.perPage, 'portrait', margin, settings.allowRotation);
@@ -215,8 +285,11 @@ export function buildLayout(
   items: readonly LayoutItem[],
   settingsInput: Partial<LayoutSettings> = {},
 ): LayoutSpec {
-  const settings: LayoutSettings = { ...DEFAULT_LAYOUT_SETTINGS, ...settingsInput };
+  const settings = normalizeLayoutSettings(settingsInput);
   const margin = MARGIN[settings.margin];
+  // 校准偏移：整页的槽位一起平移（裁切线跟着走），票本身仍居中在槽里
+  const dx = mm(settings.offsetXMm);
+  const dy = mm(settings.offsetYMm);
 
   if (items.length === 0) {
     return {
@@ -257,8 +330,8 @@ export function buildLayout(
         const col = i % grid.cols;
         const row = Math.floor(i / grid.cols);
         if (row >= grid.rows) return; // 理论上不会发生（chunk 长度 == perPage）
-        const x = margin + col * (slotW + GAP);
-        const y = margin + row * (slotH + GAP);
+        const x = margin + col * (slotW + GAP) + dx;
+        const y = margin + row * (slotH + GAP) + dy;
         const f = fit(item, slotW, slotH, settings.allowRotation);
         slots.push({
           id: item.id,

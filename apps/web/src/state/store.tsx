@@ -1,11 +1,18 @@
 import type {
+  CorrectPatch,
   DuplicateGroup,
   Issue,
   LayoutSettings,
   Orientation,
   PerPage,
 } from '@invoice-tool/core';
-import { DEFAULT_LAYOUT_SETTINGS, findDuplicates, validateInvoice } from '@invoice-tool/core';
+import {
+  DEFAULT_LAYOUT_SETTINGS,
+  applyCorrection,
+  findDuplicates,
+  normalizeLayoutSettings,
+  validateInvoice,
+} from '@invoice-tool/core';
 import type { ReactNode } from 'react';
 import { createContext, useContext, useMemo, useReducer } from 'react';
 
@@ -50,6 +57,8 @@ export interface AppState {
   drawerOpen: boolean;
   helpOpen: boolean;
   selectedId: string | null;
+  /** 正在校正哪一张票（弹窗开着的时候非空）。放 state 里是为了让列表、预览都能发起校正 */
+  correctingId: string | null;
   marks: Record<string, Mark>;
   toast: ToastState | null;
   fatal: string | null;
@@ -94,11 +103,12 @@ export function initialState(): AppState {
     skipped: [],
     dedupeGroups: [],
     dedupeUndone: false,
-    settings: loadJson<LayoutSettings>(SETTINGS_KEY, DEFAULT_LAYOUT_SETTINGS),
+    settings: normalizeLayoutSettings(loadJson<LayoutSettings>(SETTINGS_KEY, DEFAULT_LAYOUT_SETTINGS)),
     prefs: loadJson<Prefs>(PREFS_KEY, DEFAULT_PREFS),
     drawerOpen: false,
     helpOpen: false,
     selectedId: null,
+    correctingId: null,
     marks: {},
     toast: null,
     fatal: null,
@@ -125,6 +135,8 @@ export type Action =
   | { type: 'drawer'; open: boolean }
   | { type: 'help'; open: boolean }
   | { type: 'select'; id: string | null }
+  | { type: 'correcting'; id: string | null }
+  | { type: 'correct'; id: string; patch: CorrectPatch }
   | { type: 'printed'; ids: string[] }
   | { type: 'reimbursed'; ids: string[] }
   | { type: 'crop/set'; crops: Record<string, Box | null | undefined> }
@@ -154,6 +166,34 @@ function raise(marks: Record<string, Mark>, ids: readonly string[], to: Mark): R
     next[id] = to;
   }
   return next;
+}
+
+/**
+ * 字段被人工改过之后，把「自动跳过」的名单对齐一遍。
+ *
+ * 为什么不能整份重算：`skipped` 里混着两种东西 —— 系统判出来的重复（自动）与
+ * 用户在「不打印这张」上做的选择（手工）。整份重算会把手工选择抹掉，
+ * 而用户改一个字段并不等于他改变了对其它票的主意。
+ * 所以只做两件事：不再重复的自动项放出来、新重复的自动项收进去。
+ */
+function reconcileSkips(
+  state: AppState,
+  items: IntakeItem[],
+): Pick<AppState, 'skipped' | 'dedupeGroups'> {
+  const next = applyAutoDedupe(items, state.prefs);
+  // 关掉自动去重、或用户点过「撤销，全部打印」时，**不动 skipped** ——
+  // 后者的意思是「这些重复我都要打」，改一个字段不该把这个决定撤销掉。
+  // （查重分组仍然刷新，否则「查重」页会拿着改之前的旧分组。）
+  if (!state.prefs.autoDedupe || state.dedupeUndone) {
+    return { skipped: state.skipped, dedupeGroups: next.dedupeGroups };
+  }
+
+  const wasAuto = new Set(state.dedupeGroups.flatMap((g) => g.drop));
+  const isAuto = new Set(next.skipped);
+  const skipped = new Set(state.skipped);
+  for (const id of wasAuto) if (!isAuto.has(id)) skipped.delete(id);
+  for (const id of isAuto) skipped.add(id);
+  return { skipped: [...skipped], dedupeGroups: next.dedupeGroups };
 }
 
 export function reducer(state: AppState, action: Action): AppState {
@@ -198,6 +238,7 @@ export function reducer(state: AppState, action: Action): AppState {
         skipped: [],
         dedupeGroups: [],
         selectedId: null,
+        correctingId: null,
         progress: null,
         fatal: null,
         marks: {},
@@ -213,6 +254,7 @@ export function reducer(state: AppState, action: Action): AppState {
         items,
         marks,
         selectedId: state.selectedId === action.id ? (items[0]?.id ?? null) : state.selectedId,
+        correctingId: state.correctingId === action.id ? null : state.correctingId,
         ...applyAutoDedupe(items, state.prefs),
       };
     }
@@ -253,7 +295,8 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, skipped: [], dedupeUndone: true };
 
     case 'settings': {
-      const settings = { ...state.settings, ...action.patch };
+      // 收敛之后再存：界面上来的值也要过一遍白名单，否则脏值会被写进 localStorage
+      const settings = normalizeLayoutSettings({ ...state.settings, ...action.patch });
       saveJson(SETTINGS_KEY, settings);
       return { ...state, settings };
     }
@@ -285,6 +328,20 @@ export function reducer(state: AppState, action: Action): AppState {
 
     case 'select':
       return { ...state, selectedId: action.id };
+
+    case 'correcting':
+      return { ...state, correctingId: action.id };
+
+    case 'correct': {
+      const at = state.items.findIndex((it) => it.id === action.id);
+      if (at < 0) return state;
+      const item = state.items[at]!;
+      const invoice = applyCorrection(item.invoice, action.patch);
+      const items = [...state.items];
+      items[at] = { ...item, invoice };
+      // 号码/金额是去重的依据，改完必须重算一次（见 reconcileSkips）
+      return { ...state, items, ...reconcileSkips(state, items) };
+    }
 
     case 'printed':
       return { ...state, marks: raise(state.marks, action.ids, 'printed') };

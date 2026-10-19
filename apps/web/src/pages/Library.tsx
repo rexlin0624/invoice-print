@@ -1,3 +1,4 @@
+import type { CorrectPatch } from '@invoice-tool/core';
 import type { LibraryRecord } from '../lib/library';
 import {
   clearLibrary,
@@ -5,15 +6,17 @@ import {
   removeFromLibrary,
   setMark,
   statsOf,
+  updateInvoiceFields,
 } from '../lib/library';
 import { saveBytes, saveText } from '../lib/save';
 import { pushBackup } from '../lib/libraryBackup';
 import { formatBytes, money } from '../lib/format';
+import { CorrectDialog } from '../components/CorrectDialog';
 import { useIntake } from '../state/useIntake';
 import { useLibrary, useLibraryLoad } from '../state/useLibrary';
 import { useLibraryBackup } from '../state/useLibraryBackup';
 import { useStore } from '../state/store';
-import { buildExportTable, tableToCsv } from '@invoice-tool/core';
+import { applyCorrection, buildExportTable, tableToCsv } from '@invoice-tool/core';
 import { useMemo, useState } from 'react';
 
 function dayOf(ms: number): string {
@@ -26,7 +29,7 @@ type MarkFilter = 'all' | 'printed' | 'reimbursed';
 
 export function Library() {
   const { intakeFromBytes, busy } = useIntake();
-  const { dispatch } = useStore();
+  const { state, dispatch } = useStore();
   useLibraryLoad();
   const records = useLibrary();
   const backup = useLibraryBackup();
@@ -35,6 +38,8 @@ export function Library() {
   const [markFilter, setMarkFilter] = useState<MarkFilter>('all');
   const [month, setMonth] = useState('all');
   const [confirmClear, setConfirmClear] = useState(false);
+  /** 正在校正的库记录（弹窗开着时非空） */
+  const [editing, setEditing] = useState<LibraryRecord | null>(null);
 
   const months = useMemo(() => {
     const set = new Set<string>();
@@ -112,6 +117,26 @@ export function Library() {
     } catch (err) {
       window.alert(`保存失败：${err instanceof Error ? err.message : String(err)}`);
     }
+  };
+
+  /**
+   * 校正已入库的记录。
+   *
+   * 两件事：库里那条记录换上新字段；**本次导入里如果是同一张票，也一起改** ——
+   * 同一个文件同时出现在库里和当前批次是常事（「再打一份」就会这样），
+   * 只改一边会让人以为没生效。
+   */
+  const saveCorrection = (patch: CorrectPatch): void => {
+    if (!editing) return;
+    const sha = editing.sha256;
+    const next = applyCorrection(editing.invoice, patch);
+    setEditing(null);
+    void updateInvoiceFields(sha, next).then(() => {
+      const twin = state.items.find((it) => it.invoice.sha256 === sha);
+      if (twin) dispatch({ type: 'correct', id: twin.id, patch });
+      void pushBackup();
+      dispatch({ type: 'toast', toast: { text: '字段已更新', actions: [] } });
+    });
   };
 
   const loadInto = async (list: readonly LibraryRecord[]): Promise<void> => {
@@ -291,6 +316,9 @@ export function Library() {
                     </td>
                     <td className="muted">{dayOf(record.at)}</td>
                     <td className="row-actions">
+                      <button type="button" className="link" onClick={() => setEditing(record)}>
+                        {record.invoice.invoiceNo ? '校正' : '补录'}
+                      </button>
                       <button type="button" className="link" onClick={() => void download(record)}>
                         下载
                       </button>
@@ -342,6 +370,29 @@ export function Library() {
           </section>
         )}
       </div>
+
+      {editing && (
+        <CorrectDialog
+          invoice={editing.invoice}
+          source={
+            editing.visual === 'none'
+              ? undefined
+              : async () => {
+                  const data = await readBytes(editing.sha256);
+                  if (!data || data.byteLength === 0) return undefined;
+                  return {
+                    data,
+                    visual: editing.visual,
+                    fileName: editing.fileName,
+                    pageCount: editing.invoice.pageCount,
+                    key: editing.sha256,
+                  };
+                }
+          }
+          onSave={saveCorrection}
+          onClose={() => setEditing(null)}
+        />
+      )}
     </div>
   );
 }

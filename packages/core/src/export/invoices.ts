@@ -199,11 +199,26 @@ export function guardLongDigits(text: string): string {
   return /^\d{15,}$/.test(text) ? `="${text}"` : text;
 }
 
-/** RFC4180 转义 + 长数字串保护 */
+/**
+ * 公式注入中和。
+ *
+ * 以 `=` `+` `-` `@`（以及制表符 / 回车）开头的文本，Excel 与 Google Sheets
+ * 打开 CSV 时会**当公式执行**。发票里的销售方名称、文件名都来自文件内容 ——
+ * 一份别人给的 PDF 里完全可以写个 `=HYPERLINK(...)` 当公司名，
+ * 于是「导出 CSV」这个动作就成了别人的执行入口。
+ *
+ * 中和办法是加一个前导单引号（表格软件把它当「这是文本」的标记）。
+ * 只在真的以危险字符开头时加，正常的中文名 / 数字不受影响。
+ */
+export function guardFormula(text: string): string {
+  return /^[=+\-@\t\r]/.test(text) ? `'${text}` : text;
+}
+
+/** RFC4180 转义 + 公式注入中和 + 长数字串保护 */
 function csvCell(value: string | number | undefined): string {
   if (value === undefined) return '';
   if (typeof value === 'number') return String(value);
-  return `"${guardLongDigits(value).replace(/"/g, '""')}"`;
+  return `"${guardLongDigits(guardFormula(value)).replace(/"/g, '""')}"`;
 }
 
 /** 表格 → CSV（UTF-8；调用方负责加 BOM，见 apps/web 的下载实现） */

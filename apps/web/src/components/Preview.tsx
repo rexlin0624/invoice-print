@@ -12,9 +12,11 @@ interface Props {
   items: IntakeItem[];
   zoom: number;
   cutLines: boolean;
+  /** 点槽位角上的「看原图」时回调（页下标是**源文件**的 0 基页号） */
+  onOpenOriginal?: ((itemId: string, pageIndex: number) => void) | undefined;
 }
 
-export function Preview({ spec, items, zoom, cutLines }: Props) {
+export function Preview({ spec, items, zoom, cutLines, onOpenOriginal }: Props) {
   const byId = new Map(items.map((it) => [it.id, it]));
 
   if (spec.pages.length === 0) {
@@ -58,6 +60,16 @@ export function Preview({ spec, items, zoom, cutLines }: Props) {
                     )
                   ) : (
                     <div className="slot-missing">找不到这张票</div>
+                  )}
+                  {item && item.visual !== 'none' && onOpenOriginal && (
+                    <button
+                      type="button"
+                      className="slot-zoom"
+                      title="看原图（放大核对号码与金额）"
+                      onClick={() => onOpenOriginal(item.id, sourcePage(item, slot.page))}
+                    >
+                      🔍
+                    </button>
                   )}
                   {pageCount > 1 && (
                     <span className="slot-pages">

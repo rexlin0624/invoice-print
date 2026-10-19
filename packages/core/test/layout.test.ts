@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import type { LayoutItem } from '../src/layout/index';
-import { A4, buildLayout, chooseOrientation, mm } from '../src/layout/index';
+import {
+  A4,
+  DEFAULT_LAYOUT_SETTINGS,
+  buildLayout,
+  chooseOrientation,
+  mm,
+  normalizeLayoutSettings,
+} from '../src/layout/index';
 
 /** 数电票：210×140 mm */
 const STANDARD: LayoutItem = { id: 'a', kind: 'vat-general', width: mm(210), height: mm(140) };
@@ -179,5 +186,64 @@ describe('多页票（逻辑票）', () => {
       { perPage: 4, orientation: 'landscape' },
     );
     expect(spec.pages[0]!.slots).toHaveLength(2);
+  });
+});
+
+describe('校准偏移', () => {
+  it('正的 X/Y 把槽位往右下推，负的往左上', () => {
+    const base = buildLayout(ITEMS(1), { perPage: 1, orientation: 'portrait' });
+    const down = buildLayout(ITEMS(1), { perPage: 1, orientation: 'portrait', offsetXMm: 3, offsetYMm: -2 });
+    expect(down.pages[0]!.slots[0]!.x - base.pages[0]!.slots[0]!.x).toBeCloseTo(mm(3), 6);
+    expect(down.pages[0]!.slots[0]!.y - base.pages[0]!.slots[0]!.y).toBeCloseTo(mm(-2), 6);
+  });
+
+  it('内容跟着槽位一起走（不会只挪框不挪票）', () => {
+    const spec = buildLayout(ITEMS(1), { perPage: 1, orientation: 'portrait', offsetXMm: 5 });
+    const slot = spec.pages[0]!.slots[0]!;
+    expect(slot.contentX - slot.x).toBeCloseTo((slot.w - slot.contentW) / 2, 6);
+  });
+
+  it('越界/脏值被夹住，不会把票推出纸外', () => {
+    const spec = buildLayout(ITEMS(1), { perPage: 1, offsetXMm: 999, offsetYMm: Number.NaN });
+    const slot = spec.pages[0]!.slots[0]!;
+    expect(slot.x - spec.margin).toBeCloseTo(mm(20), 6);
+    expect(slot.y - spec.margin).toBeCloseTo(0, 6);
+  });
+});
+
+describe('设置收敛（脏 localStorage 不能进排版）', () => {
+  it('未知的 perPage 回到默认 2 张', () => {
+    expect(normalizeLayoutSettings({ perPage: 3 }).perPage).toBe(2);
+    expect(normalizeLayoutSettings({ perPage: 2.5 }).perPage).toBe(2);
+    expect(normalizeLayoutSettings({ perPage: 'abc' }).perPage).toBe(2);
+    // `<select>` 里取出来的是字符串，得认
+    expect(normalizeLayoutSettings({ perPage: '4' }).perPage).toBe(4);
+    expect(normalizeLayoutSettings({ perPage: 4 }).perPage).toBe(4);
+  });
+
+  it('布尔值不会被 `Number()` 蒙混成 1 张/页', () => {
+    expect(normalizeLayoutSettings({ perPage: true }).perPage).toBe(2);
+    expect(normalizeLayoutSettings({ perPage: null }).perPage).toBe(2);
+  });
+
+  it('方向/页边距只认白名单里的值', () => {
+    const s = normalizeLayoutSettings({ orientation: 'sideways', margin: 'huge' });
+    expect(s.orientation).toBe('auto');
+    expect(s.margin).toBe('normal');
+  });
+
+  it('布尔开关非布尔时回到默认', () => {
+    expect(normalizeLayoutSettings({ cutLines: 'yes' }).cutLines).toBe(true);
+    expect(normalizeLayoutSettings({ pageNumbers: 1 }).pageNumbers).toBe(false);
+  });
+
+  it('整个对象不是对象时也能拿到一份合法设置', () => {
+    expect(normalizeLayoutSettings(null)).toEqual(DEFAULT_LAYOUT_SETTINGS);
+    expect(normalizeLayoutSettings('乱七八糟')).toEqual(DEFAULT_LAYOUT_SETTINGS);
+  });
+
+  it('偏移保留一位小数并夹到 ±20mm', () => {
+    expect(normalizeLayoutSettings({ offsetXMm: 1.234 }).offsetXMm).toBe(1.2);
+    expect(normalizeLayoutSettings({ offsetYMm: -50 }).offsetYMm).toBe(-20);
   });
 });

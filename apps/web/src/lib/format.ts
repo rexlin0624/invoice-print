@@ -1,5 +1,5 @@
 import type { Invoice, InvoiceKind } from '@invoice-tool/core';
-import { INVOICE_KIND_LABEL, formatCents } from '@invoice-tool/core';
+import { INVOICE_KIND_LABEL, formatCents, invoiceTotal } from '@invoice-tool/core';
 
 export { formatCents };
 
@@ -36,9 +36,7 @@ export function summarize(inv: Invoice): string {
   return bits.join(' · ');
 }
 
-/** 列表里显示金额：优先价税合计，其次「不含税 + 税额」 */
+/** 列表里显示金额：优先价税合计，其次「不含税 + 税额」。口径在内核里只有一份。 */
 export function displayTotal(inv: Invoice): number | undefined {
-  if (inv.total !== undefined) return inv.total;
-  if (inv.amount !== undefined && inv.tax !== undefined) return inv.amount + inv.tax;
-  return undefined;
+  return invoiceTotal(inv);
 }

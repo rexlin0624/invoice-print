@@ -1,15 +1,27 @@
-import { buildLayout, worstLevel } from '@invoice-tool/core';
+import type { CorrectPatch } from '@invoice-tool/core';
+import {
+  applyCorrection,
+  buildLayout,
+  recognitionRate,
+  summarizeBatch,
+  summaryText,
+  worstLevel,
+} from '@invoice-tool/core';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
+import { CorrectDialog } from '../components/CorrectDialog';
 import { EmptyState } from '../components/EmptyState';
 import { InvoicePanel } from '../components/InvoicePanel';
+import { PageViewer, viewerSourceOf } from '../components/PageViewer';
 import { Preview } from '../components/Preview';
 import { PrinterIcon } from '../components/icons';
 import type { Box } from '../lib/box';
-import { alreadyHandled } from '../lib/library';
+import type { IntakeItem } from '../lib/intake';
+import { alreadyHandled, updateInvoiceFields } from '../lib/library';
 import { anyCropped, layoutItems } from '../lib/pages';
-import { saveBytes, revealSaved } from '../lib/save';
+import { saveBytes, revealSaved, saveText } from '../lib/save';
 import { isDesktop, openPath } from '../lib/shell';
+import { money } from '../lib/format';
 import { tally, toPrint, useProblems, useStore } from '../state/store';
 import { useLibrary } from '../state/useLibrary';
 
@@ -140,6 +152,61 @@ export function MergePrint() {
   const warnCount = printItems.filter((it) => worstLevel(problems.get(it.id) ?? []) === 'warn').length;
   const marks = tally(state.marks, printItems);
   const everPrinted = marks.printed + marks.reimbursed > 0;
+
+  // 汇总：口径在内核里只有一份（缺金额不算 0 元，缺了单独计数）
+  const summary = useMemo(
+    () => summarizeBatch(printItems.map((it) => it.invoice)),
+    [printItems],
+  );
+
+  /** 正在校正的那张票（弹窗开着时非空） */
+  const correcting = useMemo(
+    () => state.items.find((it) => it.id === state.correctingId) ?? null,
+    [state.items, state.correctingId],
+  );
+
+  /** 正在看原图的那张票（预览里点 🔍 打开） */
+  const [viewing, setViewing] = useState<{ item: IntakeItem; pageIndex: number } | null>(null);
+
+  /**
+   * 「复制统计」：这段文字是贴进群里对账用的。
+   *
+   * 剪贴板 API 在非安全上下文里直接不可用（file:// 打开网页版时就是这样），
+   * 所以失败要退回「存成文本文件」—— 不能给一个点了没反应的按钮。
+   */
+  const copySummary = (): void => {
+    const text = summaryText(summary, { title: '本次打印汇总' });
+    void (async () => {
+      try {
+        await navigator.clipboard.writeText(text);
+        dispatch({ type: 'toast', toast: { text: '汇总已复制到剪贴板', actions: [] } });
+      } catch {
+        await saveText(text, `发票汇总-${new Date().toISOString().slice(0, 10)}.txt`, { bom: true });
+        dispatch({
+          type: 'toast',
+          toast: { text: '这个环境不让写剪贴板，已经存成文本文件了', actions: [] },
+        });
+      }
+    })();
+  };
+
+  /**
+   * 保存校正。
+   *
+   * 落到两处，缺一处就会「界面改了、库里还是旧的」：
+   * - state（本次导入的票，去重与打印立刻按新值算）
+   * - 已报销库（这张票要是已经在库里，字段得跟着更新，否则「再打一份」打出旧数据）
+   */
+  const saveCorrection = (patch: CorrectPatch): void => {
+    if (!correcting) return;
+    const id = correcting.id;
+    const sha = correcting.invoice.sha256;
+    const next = applyCorrection(correcting.invoice, patch);
+    dispatch({ type: 'correct', id, patch });
+    dispatch({ type: 'correcting', id: null });
+    // 库里也要跟着更新，否则「再打一份」打出来的还是旧字段（没入库的票静默跳过）
+    void updateInvoiceFields(sha, next).catch(() => undefined);
+  };
 
   const compose = async (mode: 'print' | 'download'): Promise<void> => {
     if (printItems.length === 0 || composing) return;
@@ -304,6 +371,39 @@ export function MergePrint() {
           </button>
         </div>
 
+        {printItems.length > 0 && (
+          <div className="summary-bar">
+            <span>
+              本次打印 {summary.count} 张 · 合计 <b>{money(summary.amountTotal)}</b>
+              {summary.missingAmount > 0 && <span className="muted">（{summary.missingAmount} 张没金额）</span>}
+            </span>
+            <span className="sep">|</span>
+            <span>
+              已识别号码 {summary.recognized}/{summary.count}（
+              {Math.round(recognitionRate(summary) * 100)}%）
+            </span>
+            {summary.missingNo > 0 && (
+              <>
+                <span className="sep">|</span>
+                <button
+                  type="button"
+                  className="link"
+                  onClick={() => {
+                    const first = printItems.find((it) => !it.invoice.invoiceNo);
+                    if (first) dispatch({ type: 'correcting', id: first.id });
+                  }}
+                >
+                  {summary.missingNo} 张要补录
+                </button>
+              </>
+            )}
+            <span className="spacer" />
+            <button type="button" className="link" onClick={copySummary}>
+              复制统计
+            </button>
+          </div>
+        )}
+
         {skipped.size > 0 && !state.dedupeUndone && (
           <div className="banner">
             <span>
@@ -349,8 +449,39 @@ export function MergePrint() {
           </div>
         )}
 
-        <Preview spec={spec} items={printItems} zoom={zoom} cutLines={state.settings.cutLines} />
+        <Preview
+          spec={spec}
+          items={printItems}
+          zoom={zoom}
+          cutLines={state.settings.cutLines}
+          onOpenOriginal={(itemId, pageIndex) => {
+            const item = printItems.find((it) => it.id === itemId);
+            if (item) setViewing({ item, pageIndex });
+          }}
+        />
       </main>
+
+      {viewing && (
+        <PageViewer
+          item={viewerSourceOf(viewing.item)}
+          pageIndex={viewing.pageIndex}
+          onClose={() => setViewing(null)}
+        />
+      )}
+
+      {correcting && (
+        <CorrectDialog
+          invoice={correcting.invoice}
+          // XML / OFD 没有「原图」可看（只有结构化字段），别给一个点了会报错的按钮
+          source={
+            correcting.visual === 'none'
+              ? undefined
+              : () => Promise.resolve(viewerSourceOf(correcting))
+          }
+          onSave={saveCorrection}
+          onClose={() => dispatch({ type: 'correcting', id: null })}
+        />
+      )}
     </div>
   );
 }

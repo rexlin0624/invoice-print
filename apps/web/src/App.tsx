@@ -69,6 +69,34 @@ function Shell() {
     };
   }, [intake]);
 
+  /**
+   * 剪贴板粘贴导入（Ctrl/⌘ + V）。
+   *
+   * 截图工具与「另存为图片」的发票，最常见的一步就是复制到剪贴板 ——
+   * 比先存成文件再拖进来少两步。只在**标签页没有聚焦在输入框里**时才吃粘贴：
+   * 否则用户在「公司抬头」输入框里粘贴税号会被当成导入发票。
+   */
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent): void => {
+      const target = e.target;
+      if (
+        target instanceof HTMLElement &&
+        (target.isContentEditable ||
+          target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT')
+      ) {
+        return;
+      }
+      const files = e.clipboardData?.files;
+      if (!files || files.length === 0) return;
+      e.preventDefault();
+      void intake(files);
+    };
+    window.addEventListener('paste', onPaste);
+    return () => window.removeEventListener('paste', onPaste);
+  }, [intake]);
+
   const parsing = state.status === 'working' && state.items.length === 0;
 
   return (

@@ -227,6 +227,46 @@ export async function remember(
   bump();
 }
 
+/**
+ * 把人工校正后的字段写回库里。
+ *
+ * 三条不能动的：`bytes`（原文件是「再打一份」的本钱）、`mark` 与三个时间戳
+ * （改一个字段不等于这张票重新报了一次）。`at` 也刻意不动 ——
+ * 它决定列表顺序，校正一张老票不该把它顶到最前面。
+ *
+ * 找不到这条记录时**静默返回**：库里可能压根没存过这张票（用户关了「保存到本机」），
+ * 那种情况下校正只是内存里的事，不是错误。
+ */
+export async function updateInvoiceFields(
+  sha: string,
+  invoice: Invoice,
+): Promise<LibraryRecord | undefined> {
+  const list = await loadLibrary();
+  const at = list.findIndex((r) => r.sha256 === sha);
+  if (at < 0) return undefined;
+  const found = list[at]!;
+  const bytes = (await readBytes(sha)) ?? new Uint8Array();
+
+  const meta: Omit<LibraryRecord, 'hasBytes'> = {
+    sha256: found.sha256,
+    invoice,
+    mark: found.mark,
+    at: found.at,
+    addedAt: found.addedAt,
+    ...(found.printedAt !== undefined ? { printedAt: found.printedAt } : {}),
+    ...(found.reimbursedAt !== undefined ? { reimbursedAt: found.reimbursedAt } : {}),
+    fileName: found.fileName,
+    fileSize: found.fileSize,
+    visual: found.visual,
+  };
+  await tx('readwrite', (store) => store.put(toStored(meta, bytes)));
+  const next: LibraryRecord = { ...meta, hasBytes: bytes.byteLength > 0 };
+  list[at] = next;
+  index = [...list];
+  bump();
+  return next;
+}
+
 /** 在库里手动改一张票的状态 */
 export async function setMark(shas: readonly string[], mark: LibraryMark, now = Date.now()): Promise<void> {
   const list = await loadLibrary();

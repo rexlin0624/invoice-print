@@ -1,6 +1,11 @@
 import type { LayoutSettings, Margin, Orientation, PerPage } from '@invoice-tool/core';
+import { OFFSET_LIMIT_MM, clampOffsetMm } from '@invoice-tool/core';
 import { useEffect, useState } from 'react';
 
+import { buildCalibrationPdf } from '../lib/calib';
+import { printPdf } from '../lib/print';
+import type { LayoutPreset } from '../lib/presets';
+import { deletePreset, describePreset, listPresets, savePreset } from '../lib/presets';
 import type { ThemePreference } from '../lib/theme';
 import { setThemePreference, themePreference } from '../lib/theme';
 import { useStore } from '../state/store';
@@ -33,6 +38,25 @@ const THEMES: Array<{ value: ThemePreference; label: string }> = [
 export function Drawer() {
   const { state, dispatch } = useStore();
   const open = state.drawerOpen;
+  const [presets, setPresets] = useState<LayoutPreset[]>(() => listPresets());
+  const [presetName, setPresetName] = useState('');
+  const [calibBusy, setCalibBusy] = useState(false);
+  /**
+   * 偏移输入框的**文本**副本。
+   *
+   * 为什么不直接把 `number` 绑到 value 上：用户打「-3」的第一个字符是「-」，
+   * 当场 clamp 成 0 会把刚打的字吞掉（光标跳、数字变 0）。所以先留文本，
+   * 能解析出数字才写回设置。
+   */
+  const [offsetText, setOffsetText] = useState({ x: '0', y: '0' });
+
+  useEffect(() => {
+    if (!open) return;
+    setOffsetText({ x: String(state.settings.offsetXMm), y: String(state.settings.offsetYMm) });
+    setPresets(listPresets());
+    // 只在打开抽屉时同步一次：打字过程中不要被设置回灌
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -49,6 +73,23 @@ export function Drawer() {
     dispatch({ type: 'settings', patch });
   };
   const close = (): void => dispatch({ type: 'drawer', open: false });
+
+  /** 打一张校准测试页：不走「合并打印」，直接生成一页 PDF 交给系统打印 */
+  const printCalibration = async (): Promise<void> => {
+    setCalibBusy(true);
+    try {
+      const bytes = await buildCalibrationPdf(state.settings);
+      const result = await printPdf(bytes, '打印校准测试页.pdf');
+      dispatch({ type: 'toast', toast: { text: result.message, actions: [] } });
+    } catch (err) {
+      dispatch({
+        type: 'toast',
+        toast: { text: `校准页生成失败：${err instanceof Error ? err.message : String(err)}`, actions: [] },
+      });
+    } finally {
+      setCalibBusy(false);
+    }
+  };
 
   return (
     <>
@@ -114,6 +155,126 @@ export function Drawer() {
                 onChange={(v) => set({ allowRotation: v })}
               />
             </Row>
+          </section>
+
+          <section className="group">
+            <h3>打印校准</h3>
+            <Row label="偏移 X（mm）" hint="打出来整体偏右就填负数，偏左填正数">
+              <input
+                type="number"
+                step="0.5"
+                min={-OFFSET_LIMIT_MM}
+                max={OFFSET_LIMIT_MM}
+                value={offsetText.x}
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  setOffsetText((prev) => ({ ...prev, x: raw }));
+                  if (raw.trim() !== '' && Number.isFinite(Number(raw))) set({ offsetXMm: clampOffsetMm(raw) });
+                }}
+                onBlur={() => setOffsetText((prev) => ({ ...prev, x: String(clampOffsetMm(prev.x)) }))}
+              />
+            </Row>
+            <Row label="偏移 Y（mm）" hint="打出来整体偏下就填负数，偏上填正数">
+              <input
+                type="number"
+                step="0.5"
+                min={-OFFSET_LIMIT_MM}
+                max={OFFSET_LIMIT_MM}
+                value={offsetText.y}
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  setOffsetText((prev) => ({ ...prev, y: raw }));
+                  if (raw.trim() !== '' && Number.isFinite(Number(raw))) set({ offsetYMm: clampOffsetMm(raw) });
+                }}
+                onBlur={() => setOffsetText((prev) => ({ ...prev, y: String(clampOffsetMm(prev.y)) }))}
+              />
+            </Row>
+            <Row label="不知道偏多少？" hint="打一张带方格与直尺的测试页，量一下再填">
+              <button type="button" className="btn btn-sm" disabled={calibBusy} onClick={() => void printCalibration()}>
+                {calibBusy ? '生成中…' : '打印校准测试页'}
+              </button>
+            </Row>
+            <p className="help-note" style={{ margin: '2px 0 6px' }}>
+              测试页要按 <b>100% / 实际大小</b> 打，别勾「适应页面」。量蓝框到纸边的四边距离：
+              偏右就 X 填负数、偏下就 Y 填负数。直尺量出来不是 100 mm 说明打印机在缩放，
+              那是驱动设置的问题，别用偏移去凑。
+            </p>
+            {(state.settings.offsetXMm !== 0 || state.settings.offsetYMm !== 0) && (
+              <Row label="当前偏移">
+                <button
+                  type="button"
+                  className="link"
+                  onClick={() => {
+                    set({ offsetXMm: 0, offsetYMm: 0 });
+                    setOffsetText({ x: '0', y: '0' });
+                  }}
+                >
+                  归零（X {state.settings.offsetXMm} / Y {state.settings.offsetYMm} mm）
+                </button>
+              </Row>
+            )}
+          </section>
+
+          <section className="group">
+            <h3>排版预设</h3>
+            <Row label="存下当前设置" hint="比如「报销季 4 张窄边距」，下次一键切回">
+              <div className="row-inline">
+                <input
+                  type="text"
+                  placeholder="预设名称"
+                  maxLength={24}
+                  value={presetName}
+                  onChange={(e) => setPresetName(e.target.value)}
+                />
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  disabled={presetName.trim() === ''}
+                  onClick={() => {
+                    setPresets(savePreset(presetName, state.settings));
+                    setPresetName('');
+                  }}
+                >
+                  保存
+                </button>
+              </div>
+            </Row>
+            {presets.length === 0 ? (
+              <p className="muted" style={{ margin: '6px 0 0', fontSize: 12.5 }}>
+                还没有预设。存一个以后，换纸型、换打印机都不用再点五下。
+              </p>
+            ) : (
+              <ul className="preset-list">
+                {presets.map((preset) => (
+                  <li key={preset.name}>
+                    <div>
+                      <b>{preset.name}</b>
+                      <span className="sub">{describePreset(preset.settings)}</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      onClick={() => {
+                        set(preset.settings);
+                        setOffsetText({
+                          x: String(preset.settings.offsetXMm),
+                          y: String(preset.settings.offsetYMm),
+                        });
+                      }}
+                    >
+                      应用
+                    </button>
+                    <button
+                      type="button"
+                      className="link danger"
+                      onClick={() => setPresets(deletePreset(preset.name))}
+                    >
+                      删除
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
           </section>
 
           <section className="group">
@@ -226,7 +387,10 @@ export function Drawer() {
           <button
             type="button"
             className="btn"
-            onClick={() => dispatch({ type: 'settings/reset' })}
+            onClick={() => {
+              dispatch({ type: 'settings/reset' });
+              setOffsetText({ x: '0', y: '0' });
+            }}
           >
             恢复默认
           </button>

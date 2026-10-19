@@ -91,6 +91,11 @@ docs/                架构决策与解析规则参考
 - 金额一律用 **整数「分」** 表示（`number`），禁止用浮点存元。
 - 取数按可信度分层：`xml/ofd` > `qr` > `pdf-text` > `ocr`，每条字段带 `source` 与 `confidence`。
 - 不用绝对坐标做字段定位，用**锚点文字相对定位**（如「价税合计」「销售方名称」）。
+- 人工校正走 `CorrectPatch` 的**三态**（不出现的键=不动、`null`=清空、有值=写死），
+  改过的字段记成 `manual`（可信度 1），只标真的改过的字段（界面侧先 `diffPatch` 差分）。
+  号码改了要清掉旧校验码。细节见 `docs/解析规则参考.md` §6。
+- 打印偏移（`offsetXMm/offsetYMm`）只在 `buildLayout` 里平移槽位一次；设置读回来一律过
+  `normalizeLayoutSettings()`（白名单 + 夹紧），**不许信 localStorage 里的值**。
 - 解析器不抛异常：返回结果 + `issues[]`。
 - 任何字段拿不到就是 `undefined`，不要用空串或 0 冒充。
 - **交给 pdfjs 的字节必须先拷贝**（`data.slice()`）。pdfjs 会把 `ArrayBuffer`
