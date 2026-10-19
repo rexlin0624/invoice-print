@@ -1,4 +1,0 @@
-# 素材里有真实发票（PII），只在本地产，不进库。
-/assets/
-# go build 的产物
-/mygo-shell

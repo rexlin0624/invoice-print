@@ -5,37 +5,23 @@
 结论：**六项全过，没有硬阻塞。但这次仍然不换** —— 理由是成熟度与迁移成本，不是技术。
 决定与复查条件见文末。
 
-- 被测框架：`github.com/egoist/mygo` **v0.5.5**（仓库 2026-09-26 建，一周五个版本）
-- 被测前端：**真实的** `apps/web/dist`（`pnpm --filter @invoice-tool/web build`）
-- 机器：macOS 27 / Apple Silicon / 8 GB，`go 1.27.2`
+| 项 | 值 |
+| --- | --- |
+| 被测框架 | `github.com/egoist/mygo` v0.5.5（仓库 2026-09-26 建，一周五个版本） |
+| 被测前端 | **真实的** `apps/web/dist`（`pnpm --filter @invoice-tool/web build`） |
+| 机器 | macOS 27 / Apple Silicon / 8 GB，`go 1.27.2` |
 
-## 怎么跑
+## 做法
 
-```sh
-# 1. 出前端（这一步和网页版完全一样）
-pnpm --filter @invoice-tool/web build
+把 `apps/web/dist` 直接当 MyGo 的前端（`mygo.SetFrontend(os.DirFS(dist))`），
+Go 侧用 `Page.Eval` 驱动页面，逐步量。页面里的 `Worker` / `WebAssembly` / `fetch` 在
+preload 里包了一层，所以「有没有真的跑到 Worker 与 wasm」是观测到的，不是猜的。
 
-# 2. 准备素材（见下一节）
-./spikes/mygo-shell/make-assets.sh
+素材通过 `mygo.Protocol` 的自定义协议交给页面：一张真实发票（本地、不入库）、
+两个合成 XML、一张**故意没有二维码**的 OCR 图片。
 
-# 3. 跑。会开一个真窗口，Go 侧用 Page.Eval 驱动页面，结果打到 stdout
-cd spikes/mygo-shell
-go run . -dist ../../apps/web/dist -assets ./assets
-```
-
-跑完自动退出。全程约 15 秒（不含出前端）。
-
-## 素材
-
-`assets/` **不入库**：`invoice-a.pdf` 是真实发票（PII），只放在本地。
-
-| 文件 | 用途 | 来源 |
-| --- | --- | --- |
-| `invoice-a.pdf` | pdfjs / 二维码 / `lp` 打印 | 自己放一张真实发票 |
-| `smoke-a.xml`、`smoke-b.xml` | 拖放导入、去重 | `make-assets.sh` 生成（虚构公司） |
-| `ocr-text.png` | 纯 OCR（**故意没有二维码**） | `make-assets.sh` 生成 |
-
-缺哪个就跳过哪一步，不会中断整个 spike。
+> harness 是一次性工具，**未入库**（`main.go` 会往仓库里塞一个 Go module，维护成本大于收益）。
+> 需要复跑时按上面三句重建即可，约 250 行。本文保留方法与全部数字。
 
 ## 实测结果
 
