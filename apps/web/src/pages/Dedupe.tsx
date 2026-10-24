@@ -1,4 +1,4 @@
-import { findDuplicates } from '@invoice-tool/core';
+import { findDuplicates, isAutoDropLevel } from '@invoice-tool/core';
 import { useMemo, useState } from 'react';
 
 import { EmptyState } from '../components/EmptyState';
@@ -10,7 +10,9 @@ import { useStore } from '../state/store';
  *
  * 立场：**只给建议，不替用户删东西**。所有「跳过」都只是排版时的开关，
  * 原文件与列表项一直都在，随时可以「都保留」。
- * 疑似重复（销售方 + 金额 + 日期相同但号码不同）默认**不**跳过 ——
+ *
+ * 只有文件级与「代码 + 号码」级默认跳过。OCR 撞号（号码可能认错）和
+ * 疑似重复（销售方 + 金额 + 日期相同但号码不同）都只提示 ——
  * 同名同价同日的两张票是完全可能真实存在的（比如同一家店的两笔同额消费）。
  */
 export function Dedupe() {
@@ -39,8 +41,9 @@ export function Dedupe() {
     [result.groups, chosen, byId],
   );
 
+  const certain = groups.filter((g) => isAutoDropLevel(g.level));
+  const ocrCollisions = groups.filter((g) => g.level === 'ocr-invoice-no');
   const suspected = groups.filter((g) => g.level === 'suspected');
-  const certain = groups.filter((g) => g.level !== 'suspected');
 
   const skippedCount = skipped.size;
   const skippedTotal = useMemo(
@@ -66,8 +69,8 @@ export function Dedupe() {
         <div>
           <h1>查重</h1>
           <p className="page-sub">
-            三层判定：文件相同 → 发票号码相同 → 疑似（销售方 + 金额 + 日期相同）。
-            前两层可以放心跳过，疑似层只提示。
+            三层判定：文件相同 → 发票代码 + 号码相同 → 疑似（OCR 撞号 / 销售方 + 金额 + 日期相同）。
+            前两层可以放心跳过，后两类只提示。
           </p>
         </div>
         <span className="spacer" />
@@ -86,7 +89,7 @@ export function Dedupe() {
           <section className="card">
             <h2>没有发现重复</h2>
             <p className="muted">
-              当前 {items.length} 张票两两之间没有相同的内容、号码，也没有「同销售方 + 同金额 + 同日期」的疑似组合。
+              当前 {items.length} 张票两两之间没有相同的内容、发票代码 + 号码，也没有「同销售方 + 同金额 + 同日期」的疑似组合。
             </p>
           </section>
         )}
@@ -98,7 +101,8 @@ export function Dedupe() {
               <span className="count">{certain.length} 组</span>
             </h2>
             <p className="muted">
-              同一张票导入了两次，或者同一张票的 PDF 与 OFD 各导入了一次。默认只留一张。
+              同一张票导入了两次，或者同一张票的 PDF 与 OFD 各导入了一次。
+              老票按「发票代码 + 号码」判定，数电票按 20 位号码。默认只留一张。
             </p>
             {certain.map((group) => (
               <div className="dupe" key={group.index}>
@@ -146,6 +150,68 @@ export function Dedupe() {
                         <span className="spacer" />
                         <span className={isSkipped ? 'chip' : 'chip chip-special'}>
                           {isSkipped ? '打印时跳过' : '会打印'}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            ))}
+          </section>
+        )}
+
+        {ocrCollisions.length > 0 && (
+          <section className="card">
+            <h2>
+              OCR 撞号
+              <span className="count">{ocrCollisions.length} 组</span>
+            </h2>
+            <p className="muted">
+              号码或代码来自 OCR，撞号可能只是把数字认错了。这里<b>默认都打印</b>，请对照票面核对后再决定。
+            </p>
+            {ocrCollisions.map((group) => (
+              <div className="dupe" key={group.index}>
+                <div className="dupe-head">
+                  <span className="chip chip-ticket">{group.reason}</span>
+                  <span className="spacer" />
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    onClick={() => applyGroup(group.ordered, group.ordered[0]!)}
+                  >
+                    只留第一张
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    onClick={() => keepAll(group.ordered)}
+                  >
+                    都保留
+                  </button>
+                </div>
+                <ul className="dupe-list">
+                  {group.ordered.map((id) => {
+                    const item = byId.get(id);
+                    if (!item) return null;
+                    return (
+                      <li key={id}>
+                        <label>
+                          <input
+                            type="radio"
+                            name={`ocr-${group.index}`}
+                            checked={(chosen[group.index] ?? group.ordered[0]) === id}
+                            onChange={() => setChosen((prev) => ({ ...prev, [group.index]: id }))}
+                          />
+                          <span className="dupe-name">{item.invoice.fileName}</span>
+                        </label>
+                        <span className="dupe-meta">
+                          {item.invoice.invoiceCode ? `${item.invoice.invoiceCode} / ` : ''}
+                          {item.invoice.invoiceNo ?? '无号码'} · {money(item.invoice.total ?? undefined)} ·{' '}
+                          {item.invoice.issueDate ?? '无日期'}
+                        </span>
+                        <span className="spacer" />
+                        <span className={skipped.has(id) ? 'chip' : 'chip chip-special'}>
+                          {skipped.has(id) ? '打印时跳过' : '会打印'}
                         </span>
                       </li>
                     );

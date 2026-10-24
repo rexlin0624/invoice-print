@@ -10,6 +10,7 @@ import {
   DEFAULT_LAYOUT_SETTINGS,
   applyCorrection,
   findDuplicates,
+  isAutoDropLevel,
   normalizeLayoutSettings,
   validateInvoice,
 } from '@invoice-tool/core';
@@ -152,7 +153,8 @@ function applyAutoDedupe(
   const result = findDuplicates(items.map((it) => it.invoice));
   const skipped: string[] = [];
   for (const group of result.groups) {
-    if (group.level === 'suspected') continue; // 疑似只标记，不自动跳过
+    // 只有文件级与「代码 + 号码」级能自动跳过；OCR 撞号、疑似重复只标记。
+    if (!isAutoDropLevel(group.level)) continue;
     skipped.push(...group.drop);
   }
   return { skipped, dedupeGroups: result.groups };
@@ -188,7 +190,9 @@ function reconcileSkips(
     return { skipped: state.skipped, dedupeGroups: next.dedupeGroups };
   }
 
-  const wasAuto = new Set(state.dedupeGroups.flatMap((g) => g.drop));
+  const wasAuto = new Set(
+    state.dedupeGroups.filter((g) => isAutoDropLevel(g.level)).flatMap((g) => g.drop),
+  );
   const isAuto = new Set(next.skipped);
   const skipped = new Set(state.skipped);
   for (const id of wasAuto) if (!isAuto.has(id)) skipped.delete(id);
