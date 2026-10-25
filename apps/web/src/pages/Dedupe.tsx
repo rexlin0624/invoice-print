@@ -61,7 +61,15 @@ export function Dedupe() {
     dispatch({ type: 'skip/many', ids, skip: false });
   };
 
-  if (items.length === 0) return <EmptyState dragOver={false} />;
+  if (items.length === 0) {
+    return (
+      <EmptyState
+        dragOver={false}
+        title="查重"
+        lead="先导入发票，再检查有没有重复。"
+      />
+    );
+  }
 
   return (
     <div className="page">

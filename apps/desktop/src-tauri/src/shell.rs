@@ -30,9 +30,24 @@ pub fn open_path(path: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     return launch("open", &[&target]);
     #[cfg(target_os = "windows")]
-    return launch("powershell", &["-NoProfile", "-Command", &format!("Start-Process '{target}'")]);
+    {
+        let script = powershell_start_process(&target);
+        return launch(
+            "powershell",
+            &["-NoProfile", "-NonInteractive", "-Command", &script],
+        );
+    }
     #[cfg(all(unix, not(target_os = "macos")))]
     return launch("xdg-open", &[&target]);
+}
+
+/// PowerShell 单引号字符串：路径里的 `'` 必须写成 `''`。
+///
+/// `print.rs` 里打印也遵循同一条转义规则；单独提出来是为了能在非 Windows
+/// 机器上跑单测，避免这条安全规则只存在于 `#[cfg(windows)]` 分支里。
+#[cfg(any(target_os = "windows", test))]
+fn powershell_start_process(target: &str) -> String {
+    format!("Start-Process -FilePath '{}'", target.replace('\'', "''"))
 }
 
 /// 先确认路径存在：把一个不存在的路径交给系统命令，用户看到的会是一句英文报错
@@ -101,5 +116,17 @@ mod tests {
     fn existing_rejects_missing_paths() {
         let err = existing("/no/such/path/发票.pdf").unwrap_err();
         assert!(err.contains("路径不存在"), "{err}");
+    }
+
+    #[test]
+    fn powershell_start_process_escapes_single_quotes() {
+        assert_eq!(
+            powershell_start_process(r"C:\tmp\发票.pdf"),
+            r"Start-Process -FilePath 'C:\tmp\发票.pdf'"
+        );
+        assert_eq!(
+            powershell_start_process(r"C:\tmp\a'; calc; '.pdf"),
+            r"Start-Process -FilePath 'C:\tmp\a''; calc; ''.pdf'"
+        );
     }
 }

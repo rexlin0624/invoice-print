@@ -6,11 +6,15 @@ import { CheckIcon, UploadIcon } from './icons';
 
 interface Props {
   dragOver: boolean;
+  /** 空状态的标题；默认是主流程的「发票合并打印」 */
+  title?: string;
+  /** 空状态的一句话说明 */
+  lead?: string;
 }
 
 const CHECKS = ['全电 / 数电发票', '自动识别金额与销售方', '重复发票自动跳过', '一页 2 / 4 张'];
 
-export function EmptyState({ dragOver }: Props) {
+export function EmptyState({ dragOver, title, lead }: Props) {
   const { intake, accept } = useIntake();
   const input = useRef<HTMLInputElement>(null);
   const [devNames, setDevNames] = useState<string[]>([]);
@@ -21,8 +25,8 @@ export function EmptyState({ dragOver }: Props) {
 
   return (
     <div className="empty">
-      <h1>发票合并打印</h1>
-      <p className="lead">拖进来，自动识别、去重、排好版。</p>
+      <h1>{title ?? '发票合并打印'}</h1>
+      <p className="lead">{lead ?? '拖进来，自动识别、去重、排好版。'}</p>
 
       <button
         type="button"

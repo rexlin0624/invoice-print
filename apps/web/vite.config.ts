@@ -1,7 +1,7 @@
 import { createReadStream, statSync } from 'node:fs';
 import { readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { extname, join, normalize, resolve } from 'node:path';
+import { extname, join, normalize, relative, resolve, sep } from 'node:path';
 
 import react from '@vitejs/plugin-react';
 import type { Plugin } from 'vite';
@@ -20,17 +20,68 @@ import { defineConfig } from 'vite';
 const SAMPLES_DIR = resolve(fileURLToPath(new URL('../../samples/private', import.meta.url)));
 const MOUNT = '/__samples__/';
 
+/**
+ * 网页版的生产 CSP。桌面版在 `tauri.conf.json` 的 `app.security.csp` 里有一份
+ * 同样的策略；改这里时两边要一起改。
+ *
+ * 为什么需要这些：
+ * - `wasm-unsafe-eval`：zxing 与 tesseract 都要编译 wasm
+ * - `worker-src/child-src blob:`：pdfjs / tesseract / 渲染 Worker
+ * - `frame-src blob:`：网页版打印走隐藏 iframe + blob PDF
+ * - `img-src data: blob:`：缩略图与 canvas 导出
+ * - `style-src 'unsafe-inline'`：React 的 style 属性
+ */
+const WEB_CSP =
+  "default-src 'self'; base-uri 'self'; object-src 'none'; form-action 'none'; " +
+  "script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; " +
+  "img-src 'self' data: blob:; font-src 'self' data:; " +
+  "connect-src 'self'; worker-src 'self' blob:; child-src 'self' blob:; " +
+  "frame-src 'self' blob:";
+
+/**
+ * 只给**网页版生产包**注入 CSP meta。
+ *
+ * Tauri 构建时 `beforeBuildCommand` 也会跑这个 vite build，但 Tauri 会按
+ * `tauri.conf.json` 自己注入 header/meta。用 `TAURI_ENV_PLATFORM` 区分，
+ * 避免两个 CSP meta 叠加后把 Tauri 的 nonce 规则挤掉。
+ */
+function cspMeta(): Plugin {
+  return {
+    name: 'invoice-tool:csp-meta',
+    apply: 'build',
+    transformIndexHtml(html) {
+      if (process.env.TAURI_ENV_PLATFORM) return html;
+      return {
+        html,
+        tags: [
+          {
+            tag: 'meta',
+            attrs: { 'http-equiv': 'Content-Security-Policy', content: WEB_CSP },
+            injectTo: 'head-prepend',
+          },
+        ],
+      };
+    },
+  };
+}
+
 function devSamples(): Plugin {
   return {
     name: 'invoice-tool:dev-samples',
     apply: 'serve',
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
-        const url = req.url ?? '';
-        const at = url.indexOf(MOUNT);
-        if (at === -1) return next();
+        const pathname = (req.url ?? '').split('?')[0] ?? '';
+        if (!pathname.startsWith(MOUNT)) return next();
 
-        const rest = decodeURIComponent(url.slice(at + MOUNT.length).split('?')[0] ?? '');
+        let rest: string;
+        try {
+          rest = decodeURIComponent(pathname.slice(MOUNT.length));
+        } catch {
+          res.statusCode = 400;
+          res.end('bad request');
+          return;
+        }
 
         if (rest === 'index.json') {
           let files: string[] = [];
@@ -48,9 +99,11 @@ function devSamples(): Plugin {
           return;
         }
 
-        // 防目录穿越：解析后必须仍在 SAMPLES_DIR 里
+        // 防目录穿越：用 relative 判断，而不是 startsWith ——
+        // `samples/private-evil` 也会通过 `startsWith('samples/private')`。
         const target = normalize(join(SAMPLES_DIR, rest));
-        if (!target.startsWith(SAMPLES_DIR) || target === SAMPLES_DIR) {
+        const inside = relative(SAMPLES_DIR, target);
+        if (inside === '' || inside === '..' || inside.startsWith(`..${sep}`)) {
           res.statusCode = 403;
           res.end('forbidden');
           return;
@@ -76,7 +129,7 @@ function devSamples(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [react(), devSamples()],
+  plugins: [react(), cspMeta(), devSamples()],
   // host / port 写死：桌面端 `tauri.conf.json` 的 devUrl 就是 http://127.0.0.1:5180。
   // 端口漂了 Tauri 只会给你一个白屏，所以用 strictPort 让冲突当场报错，而不是悄悄换端口。
   server: { host: '127.0.0.1', port: 5180, strictPort: true },
