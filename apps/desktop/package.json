@@ -1,6 +1,6 @@
 {
   "name": "@invoice-tool/desktop",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "发票工具桌面版：Tauri 外壳，前端复用 apps/web 的构建产物，Rust 只做 6 个能力模块",

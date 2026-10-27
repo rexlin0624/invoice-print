@@ -1,6 +1,6 @@
 {
   "name": "invoice-tool",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "发票工具 — 本地优先的发票合并打印 / 查重 / 汇总",
   "packageManager": "pnpm@12.3.4",

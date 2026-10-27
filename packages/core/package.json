@@ -1,6 +1,6 @@
 {
   "name": "@invoice-tool/core",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "发票内核：解析 / 校验 / 去重 / 排版（纯 TypeScript，零 DOM、零 Node API）",
