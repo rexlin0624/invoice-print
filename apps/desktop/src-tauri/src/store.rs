@@ -4,9 +4,9 @@
 //! 用户清一次浏览数据就没了；桌面版同一条记录还会落一份清单到数据目录，
 //! 库被清空时能自动恢复；出问题时也有一份本地日志可以发给开发者。
 //!
-//! ⚠️ 名字白名单：只允许 `[A-Za-z0-9._-]` 和 `/` 分隔，且不许 `..` 开头。
-//! 前端传的都是我们自己定的名字（`library-backup.json`、`logs/app.log`），
-//! 这层是兜底 —— 免得哪天一个手滑就把文件写到用户主目录去。
+//! ⚠️ 名字白名单：**封闭清单**（`ALLOWED_NAMES`），只允许库备份与日志三个名字。
+//! 不再用「字符集合法就放行」—— `logs/x.bat` 那种形状就是这么漏出去的。
+//! 新增文件必须同时改清单；这层是兜底，免得哪天一个手滑就把文件写到用户主目录去。
 
 use serde::Serialize;
 use std::io::Write;
@@ -21,6 +21,17 @@ pub struct StoreEntry {
     /// 最后修改时间（毫秒时间戳）
     pub modified: u64,
 }
+
+/// 允许经 IPC 读写的数据目录文件名（**封闭清单**，不是字符白名单）。
+///
+/// 以前用「`[A-Za-z0-9._-]` + `/`」放行任意形状，于是 `logs/x.bat` 也能写进数据目录；
+/// 再配合 `open_path` 就是一条执行链。应用真正用到的只有这三个名字，
+/// 新增文件时必须同时改这里 —— 这比「看起来安全的字符集」可靠。
+const ALLOWED_NAMES: &[&str] = &[
+    "library-backup.json",
+    "logs/app.log",
+    "logs/app.log.1",
+];
 
 /// 目录里的文件清单（最多三层，够用；符号链接不展开）
 #[tauri::command]
@@ -47,6 +58,17 @@ pub async fn store_read(
     if !path.is_file() {
         return Ok(Response::new(Vec::new()));
     }
+    // 先看大小再读：备份文件是同机可改的，被换成几十 GB 时不该先分配缓冲
+    let size = std::fs::metadata(&path)
+        .map_err(|e| format!("读不了 {name}：{e}"))?
+        .len();
+    if size > crate::files::MAX_STORE_READ_BYTES {
+        return Err(format!(
+            "{name} 太大（{} MB），上限 {} MB",
+            size / (1024 * 1024),
+            crate::files::MAX_STORE_READ_BYTES / (1024 * 1024)
+        ));
+    }
     let bytes = tauri::async_runtime::spawn_blocking(move || std::fs::read(&path))
         .await
         .map_err(|e| format!("读取任务失败：{e}"))?
@@ -60,10 +82,10 @@ pub async fn store_write(app: tauri::AppHandle, request: Request<'_>) -> Result<
     let name = crate::files::header_str(&request, "name").ok_or("缺少 name")?;
     let bytes = crate::files::bytes_of(&request)?;
     let path = resolve(&app, &name)?;
-    crate::files::write_all(&path, &bytes)
+    crate::files::write_private(&path, &bytes)
 }
 
-/// 追加（日志用）。header：`name`。文件超过 2 MB 就轮转成 `<name>.1`。
+/// 追加（日志用）。日志超过 2 MB 就轮转成 `logs/app.log.1`（轮转目标也在白名单里）。
 #[tauri::command]
 pub async fn store_append(app: tauri::AppHandle, request: Request<'_>) -> Result<u64, String> {
     /// 单份日志上限。轮转一次就够：日志是给「最近出了什么事」用的，不是归档。
@@ -76,25 +98,48 @@ pub async fn store_append(app: tauri::AppHandle, request: Request<'_>) -> Result
     }
     let path = resolve(&app, &name)?;
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("建不了目录（{}）：{e}", parent.display()))?;
+        crate::files::ensure_private_dir(parent)?;
     }
 
     if std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0) + bytes.len() as u64 > MAX_BYTES
     {
-        let rotated = path.with_file_name(format!(
-            "{}.1",
-            path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
-        ));
-        let _ = std::fs::remove_file(&rotated);
-        let _ = std::fs::rename(&path, &rotated);
+        // 轮转目标必须也在白名单里。原来按 `<name>.1` 拼：`library-backup.json` 一旦
+        // 超过 2 MB 就写出 `library-backup.json.1` —— 一个清单外的文件。
+        // 只有日志会走追加，所以轮转只给日志做，目标就写死白名单里的那一个名字。
+        const LOG_NAME: &str = "logs/app.log";
+        if name == LOG_NAME {
+            let rotated = path.with_file_name("app.log.1");
+            let _ = std::fs::remove_file(&rotated);
+            if std::fs::rename(&path, &rotated).is_ok() {
+                // 轮转出来的那份带着旧权限；老版本留下的日志可能是 0644
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(
+                        &rotated,
+                        std::fs::Permissions::from_mode(0o600),
+                    );
+                }
+            }
+        }
     }
 
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
         .open(&path)
         .map_err(|e| format!("打不开 {}：{e}", path.display()))?;
+    // 老版本留下的日志可能是 0644：开工前先收紧，同机其他用户不该读到票面内容
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+    }
     file.write_all(&bytes)
         .map_err(|e| format!("写不了 {}：{e}", path.display()))?;
     Ok(bytes.len() as u64)
@@ -117,31 +162,34 @@ fn resolve<R: tauri::Runtime>(
     name: &str,
 ) -> Result<std::path::PathBuf, String> {
     let dir = crate::app::ensure_data_dir(app)?;
-    Ok(dir.join(validate_name(name)?))
+    let path = dir.join(validate_name(name)?);
+    // 数据目录里出现符号链接只可能是别人放的（应用自己只写普通文件）。
+    // 顺着它写 = 往任意路径写，所以先拒掉。父目录也查（`logs` 被换成链接同样越界），
+    // 但数据目录本身不查：用户自己把数据目录软链到别的盘是正当用法。
+    if let Some(parent) = path.parent() {
+        if parent != dir.as_path() && is_symlink(parent) {
+            return Err(format!("拒绝写入符号链接：{}", parent.display()));
+        }
+    }
+    if is_symlink(&path) {
+        return Err(format!("拒绝写入符号链接：{}", path.display()));
+    }
+    Ok(path)
 }
 
-/// 名字白名单：`[A-Za-z0-9._-]`，`/` 分段，不许空段、不许 `..`
+fn is_symlink(path: &std::path::Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|meta| meta.file_type().is_symlink())
+        .unwrap_or(false)
+}
+
+/// 名字必须在封闭清单里。不做「字符白名单」推导 —— 那只能限制形状，限制不了用途。
 fn validate_name(name: &str) -> Result<String, String> {
-    if name.is_empty() {
-        return Err("名字不能为空".to_string());
+    if ALLOWED_NAMES.contains(&name) {
+        Ok(name.to_string())
+    } else {
+        Err(format!("不允许访问这个文件：{name}"))
     }
-    if name.starts_with('/') || name.starts_with('\\') {
-        return Err(format!("只允许数据目录里的相对路径：{name}"));
-    }
-    for segment in name.split('/') {
-        if segment.is_empty() {
-            return Err(format!("路径里有空的层级：{name}"));
-        }
-        if segment == "." || segment == ".." {
-            return Err(format!("路径里不能有 . 或 ..：{name}"));
-        }
-        for ch in segment.chars() {
-            if !(ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-')) {
-                return Err(format!("文件名里有不允许的字符「{ch}」：{name}"));
-            }
-        }
-    }
-    Ok(name.to_string())
 }
 
 fn collect(dir: &std::path::Path, prefix: &str, depth: u8, out: &mut Vec<StoreEntry>) {
@@ -152,6 +200,13 @@ fn collect(dir: &std::path::Path, prefix: &str, depth: u8, out: &mut Vec<StoreEn
         return;
     };
     for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        // 不跟随符号链接：数据目录里放一个指向 `/` 的链接就能让列表递归到整块盘
+        if file_type.is_symlink() {
+            continue;
+        }
         let file_name = entry.file_name().to_string_lossy().to_string();
         let relative = if prefix.is_empty() {
             file_name
@@ -161,9 +216,9 @@ fn collect(dir: &std::path::Path, prefix: &str, depth: u8, out: &mut Vec<StoreEn
         let Ok(meta) = entry.metadata() else {
             continue;
         };
-        if meta.is_dir() {
+        if file_type.is_dir() {
             collect(&entry.path(), &relative, depth - 1, out);
-        } else if meta.is_file() {
+        } else if file_type.is_file() {
             out.push(StoreEntry {
                 name: relative,
                 size: meta.len(),
@@ -190,13 +245,17 @@ mod tests {
     }
 
     #[test]
-    fn validate_name_blocks_escapes() {
+    fn validate_name_blocks_anything_not_on_the_list() {
         assert!(validate_name("").is_err());
         assert!(validate_name("/etc/passwd").is_err());
         assert!(validate_name("../secret").is_err());
         assert!(validate_name("logs/../../secret").is_err());
         assert!(validate_name("logs//app.log").is_err());
-        assert!(validate_name("日志.txt").is_err()); // 非 ASCII 一律拒绝（我们自己的名字都是 ASCII）
+        assert!(validate_name("日志.txt").is_err());
         assert!(validate_name("a b.txt").is_err());
+        // 以前这些都能过（字符集合法），再配 open_path 就是执行链
+        assert!(validate_name("logs/x.bat").is_err());
+        assert!(validate_name("x.cmd").is_err());
+        assert!(validate_name("library-backup.json.bak").is_err());
     }
 }

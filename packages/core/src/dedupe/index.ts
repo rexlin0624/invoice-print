@@ -5,6 +5,7 @@
  *   2. 业务级  —— 发票代码 + 号码相同 → 确定重复（同一张票的 PDF 和 OFD 合并为一张）
  *                  数电票没有代码，只按 20 位号码；老票优先按「代码 + 号码」。
  *                  号码或代码来自 OCR 时，撞号只标记、不自动删（OCR 可能认错数字）。
+ *                  号码一致但金额/销售方/明细对不上时，同样只标记（可能是伪造同号票）。
  *   3. 疑似级  —— 销售方 + 金额 + 开票日期相同 → **只标记，不自动删**，由用户确认
  *
  * 内核不做哈希：sha256 由外壳算好传进来（Web Crypto / Rust 各有一份实现）。
@@ -12,7 +13,13 @@
 
 import type { Invoice } from '../model/invoice';
 
-export type DuplicateLevel = 'file' | 'invoice-no' | 'ocr-invoice-no' | 'suspected';
+export type DuplicateLevel =
+  | 'file'
+  | 'invoice-no'
+  /** 代码 + 号码相同，但金额/销售方对不上 —— 只标记，绝不自动删 */
+  | 'invoice-no-conflict'
+  | 'ocr-invoice-no'
+  | 'suspected';
 
 /**
  * 哪一层可以自动跳过。
@@ -84,6 +91,84 @@ function normalizeId(value: string | undefined): string | undefined {
 /** 号码或代码来自 OCR：这个撞号不能直接当成同一张票 */
 function isOcrIdentity(inv: Invoice): boolean {
   return inv.provenance.invoiceNo?.source === 'ocr' || inv.provenance.invoiceCode?.source === 'ocr';
+}
+
+/** 身份字段：同号票之间这几项必须一致，不一致就不能当同一张票删 */
+const IDENTITY_FIELDS: Array<keyof Invoice> = [
+  'sellerName',
+  'sellerTaxId',
+  'buyerName',
+  'buyerTaxId',
+  'amount',
+  'total',
+  'issueDate',
+  'checkCode',
+];
+
+/** 冲突提示里给人看的字段名 */
+const FIELD_LABELS: Partial<Record<keyof Invoice, string>> = {
+  sellerName: '销售方',
+  sellerTaxId: '销售方税号',
+  buyerName: '购买方',
+  buyerTaxId: '购买方税号',
+  amount: '金额',
+  total: '价税合计',
+  issueDate: '开票日期',
+  checkCode: '校验码',
+  items: '明细',
+};
+
+/**
+ * 明细行的签名。
+ *
+ * 只比**金额序列**，不比名称/规格：同一张票的 PDF 文字层与 OFD 结构，名称里的
+ * `＊`、空格、折行并不一致，拿来比会把正常重复统统判成冲突。金额是硬的。
+ * 有一项金额缺失就返回 `undefined`（缺值不算冲突，和上面的规矩一致）。
+ */
+function itemsSignature(inv: Invoice): string | undefined {
+  const amounts = inv.items.map((item) => item.amount);
+  if (amounts.length === 0 || amounts.some((amount) => amount === undefined)) return undefined;
+  return amounts.join(',');
+}
+
+/**
+ * 同号票之间**对不上**的字段名。
+ *
+ * 只比较「两边都有值」的字段：PDF 与 OFD 各缺一半是常态，缺值不算冲突。
+ * 一旦冲突，说明至少有一张是错的（或干脆是伪造同号票），此时自动删任何一张
+ * 都可能删掉真票、留下假票 —— 必须交给人看。
+ *
+ * 文本按**去掉全部空白**后比较：XML 附件里的名称可能带空格，而文字层是按 token
+ * 拼起来的（没有空格）。那点排版差异不是「字段对不上」，否则同一张票的 PDF 与
+ * OFD 会被判成冲突，自动合并（这条功能的主路径）就废了。
+ */
+function conflictingFields(members: readonly Invoice[]): Array<keyof Invoice> {
+  const out: Array<keyof Invoice> = [];
+  for (const field of IDENTITY_FIELDS) {
+    const values = new Map<string, true>();
+    for (const member of members) {
+      const value = member[field];
+      if (value === undefined) continue;
+      values.set(String(value).replace(/\s+/g, ''), true);
+      if (values.size > 1) {
+        out.push(field);
+        break;
+      }
+    }
+  }
+  // 明细单独比：`items` 是数组，走上面的 `String(value)` 只会得到 "[object Object]"，
+  // 那等于没比 —— 同号但明细金额不同，同样可能是伪造同号票。
+  const signatures = new Set<string>();
+  for (const member of members) {
+    const signature = itemsSignature(member);
+    if (signature === undefined) continue;
+    signatures.add(signature);
+    if (signatures.size > 1) {
+      out.push('items');
+      break;
+    }
+  }
+  return out;
 }
 
 interface BusinessBucket {
@@ -197,6 +282,20 @@ export function findDuplicates(invoices: readonly Invoice[], options: DedupeOpti
         keep: keep.id,
         drop,
         reason: `${label}，但号码或代码来自 OCR，识别可能出错，请核对票面。`,
+      });
+      continue;
+    }
+
+    // 同号但金额/销售方/日期对不上：可能是伪造同号票，也可能是解析错了一张。
+    // 自动删会留下攻击者想让你看到的那张 —— 改为只标记，由用户看票面决定。
+    const conflicts = conflictingFields(bucket.members);
+    if (conflicts.length > 0) {
+      drop.forEach((id) => flagged.push(id));
+      groups.push({
+        level: 'invoice-no-conflict',
+        keep: keep.id,
+        drop,
+        reason: `${label}，但${conflicts.map((f) => FIELD_LABELS[f] ?? String(f)).join('、')}对不上，请核对票面后决定保留哪张。`,
       });
       continue;
     }

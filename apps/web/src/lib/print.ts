@@ -13,7 +13,7 @@
  */
 
 import type { Invoice, LayoutSpec, Slot } from '@invoice-tool/core';
-import { INVOICE_KIND_LABEL } from '@invoice-tool/core';
+import { guardFormula, guardLongDigits, INVOICE_KIND_LABEL } from '@invoice-tool/core';
 import type { PDFPage } from 'pdf-lib';
 import {
   PDFDocument,
@@ -360,37 +360,41 @@ export function invoicesToCsv(invoices: readonly Invoice[]): string {
   const esc = (v: string): string => `"${v.replace(/"/g, '""')}"`;
 
   /**
-   * 长数字串必须「写成文本」，否则 Excel 打开 CSV 会把它变成科学计数法
-   * （20 位发票号码 → 1.2346E+19，且末几位变 0，报销时对不上）。
-   * CSV 里加引号是**不管用**的 —— Excel 会脱掉引号再当数字解析。
-   * 唯一可靠的做法是写成公式：`="12345678901234567890"`。
-   * M2 换成真正的 .xlsx（ExcelJS）后由单元格格式接管，这个 hack 就可以删掉。
+   * 所有**文本**单元格都先过 `guardFormula`：文件名、销售方、大写金额都来自**别人给的文件**，
+   * 一句 `=HYPERLINK(...)` 就能在「导出 Excel」时变成执行入口。
+   *
+   * 然后再做长数字串保护（`="123…"`）—— 顺序不能反：
+   * 先包成公式文本的话，`guardFormula` 就看不到前导危险字符了。
    */
-  const text = (v: string): string =>
-    /^\d{15,}$/.test(v) ? `="${v}"` : v;
+  const text = (v: string): string => guardLongDigits(guardFormula(v));
 
   const yuan = (cents: number | undefined): string =>
     cents === undefined ? '' : (cents / 100).toFixed(2);
 
+  /**
+   * 金额列**不能**过 `guardFormula`：红字发票是负数，`-123.45` 会被加个前导单引号
+   * 变成文本 `'-123.45`，Excel 里再也不能求和/排序。这列不是外部文本，
+   * 是 `toFixed(2)` 拼出来的 `-?\d+\.\d{2}`，本身就没有公式注入的可能。
+   */
+  const money = (cents: number | undefined): string => esc(yuan(cents));
+
   const rows = invoices.map((inv) =>
     [
-      inv.fileName,
-      INVOICE_KIND_LABEL[inv.kind] ?? inv.kind,
-      text(inv.invoiceNo ?? ''),
-      text(inv.invoiceCode ?? ''),
-      inv.issueDate ?? '',
-      inv.sellerName ?? '',
-      text(inv.sellerTaxId ?? ''),
-      inv.buyerName ?? '',
-      text(inv.buyerTaxId ?? ''),
-      yuan(inv.amount),
-      yuan(inv.tax),
-      yuan(inv.total),
-      inv.totalInWords ?? '',
-    ]
-      .map((v) => esc(v))
-      .join(','),
+      esc(text(inv.fileName)),
+      esc(text(INVOICE_KIND_LABEL[inv.kind] ?? inv.kind)),
+      esc(text(inv.invoiceNo ?? '')),
+      esc(text(inv.invoiceCode ?? '')),
+      esc(text(inv.issueDate ?? '')),
+      esc(text(inv.sellerName ?? '')),
+      esc(text(inv.sellerTaxId ?? '')),
+      esc(text(inv.buyerName ?? '')),
+      esc(text(inv.buyerTaxId ?? '')),
+      money(inv.amount),
+      money(inv.tax),
+      money(inv.total),
+      esc(text(inv.totalInWords ?? '')),
+    ].join(','),
   );
 
-  return `\uFEFF${header.map(esc).join(',')}\n${rows.join('\n')}\n`;
+  return `\uFEFF${header.map((v) => esc(text(v))).join(',')}\n${rows.join('\n')}\n`;
 }

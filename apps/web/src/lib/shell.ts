@@ -184,6 +184,20 @@ export async function storeRemove(name: string): Promise<void> {
 /** 本地日志的文件名（在数据目录里） */
 export const LOG_NAME = 'logs/app.log';
 
+/** 日志单行上限：一条日志不该比这个更长（异常消息可能带着整段 HTML） */
+const MAX_LOG_CHARS = 4000;
+
+/**
+ * 控制字符替换成空格。
+ *
+ * 日志是**行式**的：文件名 / 错误消息里只要有一个 `\n`，就能伪造一条看起来
+ * 像应用自己写下的记录（例如把「xxx 失败」改成「backup restored: 99 条」）。
+ * 顺便挡掉 `\r`、NUL 与 ESC，免得在终端里看出花来。
+ */
+function logSafe(text: string): string {
+  return text.replace(/[\r\n\u0000-\u001f\u007f]/g, ' ').slice(0, MAX_LOG_CHARS);
+}
+
 /**
  * 往本地日志里记一行（**只有桌面版会写**，网页版是空操作）。
  *
@@ -193,5 +207,5 @@ export const LOG_NAME = 'logs/app.log';
 export function logLine(text: string): void {
   if (!isDesktop()) return;
   const stamp = new Date().toISOString();
-  void storeAppend(LOG_NAME, `${stamp} ${text}`).catch(() => undefined);
+  void storeAppend(LOG_NAME, `${stamp} ${logSafe(text)}`).catch(() => undefined);
 }

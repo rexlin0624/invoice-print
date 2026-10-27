@@ -43,6 +43,7 @@ export function Dedupe() {
 
   const certain = groups.filter((g) => isAutoDropLevel(g.level));
   const ocrCollisions = groups.filter((g) => g.level === 'ocr-invoice-no');
+  const conflicts = groups.filter((g) => g.level === 'invoice-no-conflict');
   const suspected = groups.filter((g) => g.level === 'suspected');
 
   const skippedCount = skipped.size;
@@ -77,8 +78,8 @@ export function Dedupe() {
         <div>
           <h1>查重</h1>
           <p className="page-sub">
-            三层判定：文件相同 → 发票代码 + 号码相同 → 疑似（OCR 撞号 / 销售方 + 金额 + 日期相同）。
-            前两层可以放心跳过，后两类只提示。
+            三层判定：文件相同 → 发票代码 + 号码相同 → 疑似（同号但字段冲突 / OCR 撞号 / 销售方 + 金额 + 日期相同）。
+            只有前两层且字段一致时才会默认跳过，其余只提示。
           </p>
         </div>
         <span className="spacer" />
@@ -158,6 +159,69 @@ export function Dedupe() {
                         <span className="spacer" />
                         <span className={isSkipped ? 'chip' : 'chip chip-special'}>
                           {isSkipped ? '打印时跳过' : '会打印'}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            ))}
+          </section>
+        )}
+
+        {conflicts.length > 0 && (
+          <section className="card">
+            <h2>
+              同号但字段对不上
+              <span className="count">{conflicts.length} 组</span>
+            </h2>
+            <p className="muted">
+              发票代码 + 号码相同，但金额、销售方或开票日期不一致。可能是同一张票的某一份解析错了，
+              也可能是有人拿真票的号码做了假票 —— <b>默认都打印</b>，请对照票面确认后再决定。
+            </p>
+            {conflicts.map((group) => (
+              <div className="dupe" key={group.index}>
+                <div className="dupe-head">
+                  <span className="chip chip-ticket">{group.reason}</span>
+                  <span className="spacer" />
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    onClick={() => applyGroup(group.ordered, group.ordered[0]!)}
+                  >
+                    只留第一张
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    onClick={() => keepAll(group.ordered)}
+                  >
+                    都保留
+                  </button>
+                </div>
+                <ul className="dupe-list">
+                  {group.ordered.map((id) => {
+                    const item = byId.get(id);
+                    if (!item) return null;
+                    return (
+                      <li key={id}>
+                        <label>
+                          <input
+                            type="radio"
+                            name={`conflict-${group.index}`}
+                            checked={(chosen[group.index] ?? group.ordered[0]) === id}
+                            onChange={() => setChosen((prev) => ({ ...prev, [group.index]: id }))}
+                          />
+                          <span className="dupe-name">{item.invoice.fileName}</span>
+                        </label>
+                        <span className="dupe-meta">
+                          {item.invoice.invoiceCode ? `${item.invoice.invoiceCode} / ` : ''}
+                          {item.invoice.invoiceNo ?? '无号码'} · {money(item.invoice.total ?? undefined)} ·{' '}
+                          {item.invoice.issueDate ?? '无日期'} · {item.invoice.sellerName ?? '未识别销售方'}
+                        </span>
+                        <span className="spacer" />
+                        <span className={skipped.has(id) ? 'chip' : 'chip chip-special'}>
+                          {skipped.has(id) ? '打印时跳过' : '会打印'}
                         </span>
                       </li>
                     );

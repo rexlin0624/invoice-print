@@ -29,13 +29,16 @@ pub struct PrintOutcome {
 #[tauri::command]
 pub async fn print_document(
     app: tauri::AppHandle,
+    trusted: tauri::State<'_, crate::files::TrustedPaths>,
     request: Request<'_>,
 ) -> Result<PrintOutcome, String> {
     let bytes = crate::files::bytes_of(&request)?;
     let name = crate::files::header_str(&request, "name").unwrap_or_else(|| "票.pdf".to_string());
 
     let path = crate::files::temp_pdf_path(&app, &name)?;
-    crate::files::write_all(&path, &bytes)?;
+    crate::files::write_private(&path, &bytes)?;
+    // 失败时前端会拿这个路径「用系统程序打开」，必须先信任
+    trusted.trust(&path);
     let path_text = path.to_string_lossy().to_string();
 
     let (ok, message) = match hand_to_system(&path) {
@@ -43,6 +46,14 @@ pub async fn print_document(
         Ok(None) => (true, "已交给系统打印".to_string()),
         Err(err) => (false, format!("没能直接打印：{err}")),
     };
+
+    // 成功后临时文件没用了，尽快删掉（里面是完整票面）。
+    // Windows 的打印是异步的：阅读器可能还在读，交给 1 小时清理兜底。
+    #[cfg(not(target_os = "windows"))]
+    if ok {
+        let _ = std::fs::remove_file(&path);
+    }
+
     Ok(PrintOutcome {
         ok,
         message,

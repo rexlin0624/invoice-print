@@ -13,7 +13,8 @@
  * 真想删，去数据目录删文件（帮助 → 打开数据目录）。
  */
 
-import type { Invoice } from '@invoice-tool/core';
+import type { Invoice, Issue } from '@invoice-tool/core';
+import { INVOICE_KIND_LABEL, MAX_AMOUNT_CENTS, MAX_INVOICE_PAGES } from '@invoice-tool/core';
 
 import type { LibraryMark, LibraryRecord, RememberInput } from './library';
 import { currentLibrary, remember } from './library';
@@ -21,6 +22,13 @@ import { isDesktop, logLine, storeRead, storeWrite } from './shell';
 
 export const BACKUP_NAME = 'library-backup.json';
 const BACKUP_VERSION = 1;
+/**
+ * 备份里最多认多少条记录。
+ *
+ * 备份文件是可被同机其他进程改的：一个 20 MB 的 JSON 塞几十万条记录，恢复时会一条条
+ * 写回 IndexedDB。上限给得很宽松（正常用户远到不了），只挡「明显不是我们写的」文件。
+ */
+const MAX_BACKUP_RECORDS = 200_000;
 
 export interface BackupRecord {
   sha256: string;
@@ -65,6 +73,7 @@ export function parseBackup(text: string): Backup | undefined {
   try {
     const parsed = JSON.parse(text) as { version?: unknown; at?: unknown; records?: unknown };
     if (!parsed || !Array.isArray(parsed.records)) return undefined;
+    if (parsed.records.length > MAX_BACKUP_RECORDS) return undefined;
     const records = parsed.records.filter(isBackupRecord);
     if (records.length === 0) return undefined;
     return {
@@ -82,10 +91,127 @@ function isBackupRecord(value: unknown): value is BackupRecord {
   const record = value as Partial<BackupRecord>;
   return (
     typeof record.sha256 === 'string' &&
+    /^[0-9a-fA-F]{1,128}$/.test(record.sha256) &&
     (record.mark === 'printed' || record.mark === 'reimbursed') &&
     typeof record.fileName === 'string' &&
-    typeof record.invoice === 'object' &&
-    record.invoice !== null
+    record.fileName.length <= 1024 &&
+    isFiniteNonNegative(record.fileSize) &&
+    isTimestamp(record.at) &&
+    isTimestamp(record.addedAt) &&
+    (record.printedAt === undefined || isTimestamp(record.printedAt)) &&
+    (record.reimbursedAt === undefined || isTimestamp(record.reimbursedAt)) &&
+    isInvoice(record.invoice)
+  );
+}
+
+function isFiniteNonNegative(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+/** 出处表只用来显示「来自哪儿」：浅校验即可，但不许是数组/超大对象 */
+function isProvenance(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  return Object.keys(value).length <= 64;
+}
+
+/** 时间戳：毫秒，且不能是 1970 以前或几百年以后 */
+function isTimestamp(value: unknown): value is number {
+  return isFiniteNonNegative(value) && value <= 4_102_444_800_000; // 2100-01-01
+}
+
+const INVOICE_KINDS = new Set<string>(Object.keys(INVOICE_KIND_LABEL));
+const ISSUE_LEVELS = new Set(['info', 'warn', 'error']);
+
+function optionalString(value: unknown, maxLength = 1024): boolean {
+  return value === undefined || (typeof value === 'string' && value.length <= maxLength);
+}
+
+function optionalCents(value: unknown): boolean {
+  return value === undefined || (
+    typeof value === 'number' &&
+    Number.isFinite(value) &&
+    Math.abs(value) <= MAX_AMOUNT_CENTS
+  );
+}
+
+/**
+ * 备份里的 `invoice` 也要按完整形状校验。
+ *
+ * 备份文件在应用数据目录里，恶意软件/同机其他用户能改；恢复后这些字段会进
+ * 列表、去重、打印与报销统计。只检查「是个对象」等于把一份任意 JSON 当发票用。
+ */
+function isInvoice(value: unknown): value is Invoice {
+  if (typeof value !== 'object' || value === null) return false;
+  const inv = value as Partial<Invoice>;
+
+  if (typeof inv.id !== 'string' || inv.id.length === 0 || inv.id.length > 256) return false;
+  if (typeof inv.fileName !== 'string' || inv.fileName.length > 1024) return false;
+  if (!isFiniteNonNegative(inv.fileSize)) return false;
+  if (typeof inv.sha256 !== 'string' || inv.sha256.length > 128) return false;
+  if (typeof inv.kind !== 'string' || !INVOICE_KINDS.has(inv.kind)) return false;
+  if (!isFiniteNonNegative(inv.pageCount) || inv.pageCount < 1 || inv.pageCount > MAX_INVOICE_PAGES) return false;
+  if (!Array.isArray(inv.items) || inv.items.length > 10_000) return false;
+  if (!Array.isArray(inv.issues) || inv.issues.length > 10_000) return false;
+  if (!isProvenance(inv.provenance)) return false;
+
+  if (!optionalString(inv.businessTag)) return false;
+  if (!optionalString(inv.invoiceNo, 64)) return false;
+  if (!optionalString(inv.invoiceCode, 64)) return false;
+  if (!optionalString(inv.issueDate, 32)) return false;
+  if (!optionalString(inv.sellerName)) return false;
+  if (!optionalString(inv.sellerTaxId, 64)) return false;
+  if (!optionalString(inv.buyerName)) return false;
+  if (!optionalString(inv.buyerTaxId, 64)) return false;
+  if (!optionalString(inv.totalInWords)) return false;
+  if (!optionalString(inv.checkCode, 64)) return false;
+  if (!optionalCents(inv.amount)) return false;
+  if (!optionalCents(inv.tax)) return false;
+  if (!optionalCents(inv.total)) return false;
+  if (inv.importedAt !== undefined && !isTimestamp(inv.importedAt)) return false;
+  if (inv.skipPages !== undefined) {
+    if (!Array.isArray(inv.skipPages)) return false;
+    if (inv.skipPages.length > MAX_INVOICE_PAGES) return false;
+    if (!inv.skipPages.every((page) => Number.isInteger(page) && page >= 0 && page < MAX_INVOICE_PAGES)) {
+      return false;
+    }
+  }
+  if (!inv.issues.every(isIssue)) return false;
+  if (!inv.items.every(isItem)) return false;
+
+  return true;
+}
+
+/** 明细行也会进排版与打印：名称/规格限长，金额限范围，别让一行明细撑爆版面 */
+function isItem(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) return false;
+  const item = value as Partial<Invoice['items'][number]>;
+  return (
+    optionalString(item.name, 200) &&
+    optionalString(item.spec, 200) &&
+    optionalString(item.unit, 32) &&
+    optionalString(item.taxRate, 32) &&
+    optionalNumber(item.quantity, (n) => n >= 0 && n <= 1e9) &&
+    optionalCents(item.unitPrice) &&
+    optionalCents(item.amount) &&
+    optionalCents(item.tax)
+  );
+}
+
+function optionalNumber(value: unknown, inRange: (value: number) => boolean): boolean {
+  return value === undefined || (
+    typeof value === 'number' && Number.isFinite(value) && inRange(value)
+  );
+}
+
+function isIssue(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) return false;
+  const issue = value as Partial<Issue>;
+  return (
+    typeof issue.code === 'string' &&
+    typeof issue.level === 'string' &&
+    ISSUE_LEVELS.has(issue.level) &&
+    typeof issue.message === 'string' &&
+    issue.message.length <= 4096
   );
 }
 

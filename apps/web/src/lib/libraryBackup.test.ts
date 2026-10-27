@@ -89,6 +89,16 @@ describe('格式', () => {
     expect(parseBackup('{"records":[{"sha256":"a"}]}')).toBeUndefined(); // 缺字段的记录被丢掉 → 空 → 当没有
   });
 
+  it('invoice 形状/数值不合理 → 整条记录丢掉（备份在数据目录里，同机可改）', () => {
+    const pages = record('a');
+    pages.invoice = { ...pages.invoice, pageCount: 999_999_999 };
+    expect(parseBackup(backupJson([pages]))).toBeUndefined();
+
+    const amount = record('b');
+    amount.invoice = { ...amount.invoice, total: Number.POSITIVE_INFINITY };
+    expect(parseBackup(backupJson([amount]))).toBeUndefined();
+  });
+
   it('概况：条数与已报销数', () => {
     const backup = parseBackup(backupJson([record('a'), record('b', 'printed')]))!;
     expect(summaryOf(backup)).toEqual({ count: 2, reimbursed: 1, at: backup.at });

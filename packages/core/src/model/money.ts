@@ -8,6 +8,15 @@
 /** 金额，单位：分 */
 export type Cents = number;
 
+/**
+ * 金额上限（分）：1000 亿元。
+ *
+ * 这个数字远大于任何真实发票，作用只是**挡住溢出与荒谬值**：
+ * 中文大写金额可以写成「壹亿壹亿…」，多次乘方会变成 `Infinity`，
+ * 一旦进入批次合计，整页金额都变成 `NaN`/`Infinity`，且没有任何提示。
+ */
+export const MAX_AMOUNT_CENTS = 1e13;
+
 /** 数字（含千分位、可带负号）→ 分。失败返回 undefined。 */
 export function decimalToCents(input: string): Cents | undefined {
   const s = input.replace(/[,\s]/g, '');
@@ -17,7 +26,9 @@ export function decimalToCents(input: string): Cents | undefined {
   const whole = Number(m[2]);
   const frac = Number((m[3] ?? '').padEnd(2, '0'));
   if (!Number.isFinite(whole) || !Number.isFinite(frac)) return undefined;
-  return sign * (whole * 100 + frac);
+  const cents = sign * (whole * 100 + frac);
+  if (!Number.isFinite(cents) || Math.abs(cents) > MAX_AMOUNT_CENTS) return undefined;
+  return cents;
 }
 
 /** 分 → "1234.56"（无千分位） */
@@ -102,7 +113,9 @@ function chineseIntegerToNumber(text: string): number | undefined {
     }
   }
   if (!sawAny) return undefined;
-  return total + section + pending;
+  const value = total + section + pending;
+  // 「壹亿」连写 40 次会乘到 Infinity；这里直接判失败，别让它流进批次合计
+  return Number.isFinite(value) ? value : undefined;
 }
 
 /**
@@ -134,6 +147,7 @@ export function capitalToCents(input: string): Cents | undefined {
   if (jm) cents += (jm[1] ? CN_DIGIT[jm[1]]! : 0) * 10;
   if (fm) cents += fm[1] ? CN_DIGIT[fm[1]]! : 0;
 
+  if (!Number.isFinite(cents) || cents > MAX_AMOUNT_CENTS) return undefined;
   return cents;
 }
 

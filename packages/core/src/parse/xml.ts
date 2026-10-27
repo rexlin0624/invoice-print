@@ -24,6 +24,14 @@ export interface MapExtraction {
   raw: Record<string, string[]>;
 }
 
+/** 名称/大写金额等自由文本的上限（字符）。真实值远小于此。 */
+const MAX_TEXT_FIELD_CHARS = 200;
+
+/** 报错里引用原文时要截断，别把 19 MB 的字段抄进日志/界面 */
+function clip(text: string): string {
+  return text.length > 80 ? `${text.slice(0, 80)}…` : text;
+}
+
 /** 归一化键名：小写、去掉命名空间前缀与非字母数字（中文保留） */
 export function normalizeKey(key: string): string {
   return key
@@ -75,6 +83,31 @@ function flatten(node: unknown, out: FlatTree, isAttribute = false): void {
   }
 }
 
+/**
+ * 取第一个**通过校验**的候选值。
+ *
+ * 原来的 `pick` 只取每个候选键的第一个值：候选表里排前面的键如果给了个坏值
+ * （`<Fphm>---</Fphm>`），后面那些键就算有正常值也拿不到 —— 一张真票因此丢号码，
+ * 连带失去去重能力和打印标题。所以「取哪个键」与「值能不能用」必须一起判断。
+ *
+ * 元素优先于属性（`<Fphm>` 比 `Fphm="…"` 更像正主），同一键内也只认能过校验的那个。
+ */
+function pickWhere(
+  flat: FlatTree,
+  candidates: readonly string[],
+  accept: (value: string) => boolean,
+): { key: string; value: string } | undefined {
+  for (const c of candidates) {
+    const k = normalizeKey(c);
+    const values = [flat.elements.get(k)?.[0], flat.attributes.get(k)?.[0]];
+    for (const value of values) {
+      if (value !== undefined && accept(value)) return { key: k, value };
+    }
+  }
+  return undefined;
+}
+
+/** 不做校验的取法：只用来拿「第一个值」写进 issue 文案 */
 function pick(flat: FlatTree, candidates: readonly string[]): { key: string; value: string } | undefined {
   for (const c of candidates) {
     const k = normalizeKey(c);
@@ -167,51 +200,154 @@ export function parseInvoiceXml(xml: string): MapExtraction {
     anchors[field] = `<${key}>`;
   };
 
-  const no = pick(flat, K.invoiceNo);
-  if (no) set('invoiceNo', no.key, no.value.replace(/\s/g, ''));
+  /**
+   * 名称/大写金额这类自由文本：只限长度，不改内容。
+   *
+   * 不设上限的话，一个 19 MB 的 `<SellerName>` 会被原样带进列表、去重比较、
+   * 打印排版和备份文件 —— 每处都再复制一遍。真实名称不会超过几十个字。
+   */
+  const setText = (field: keyof Invoice, picked: { key: string; value: string }): void => {
+    if (picked.value.length <= MAX_TEXT_FIELD_CHARS) {
+      set(field, picked.key, picked.value);
+      return;
+    }
+    issues.push(
+      makeIssue(
+        'field-invalid',
+        'warn',
+        `XML 里的字段过长（${picked.value.length} 字，上限 ${MAX_TEXT_FIELD_CHARS}），已忽略：${clip(picked.value)}`,
+        field,
+      ),
+    );
+  };
 
-  const code = pick(flat, K.invoiceCode);
-  if (code) set('invoiceCode', code.key, code.value.replace(/\s/g, ''));
+  /** 税号：15–20 位字母数字。形状不对就不收，避免污染「同税号」判定。 */
+  const setTaxId = (field: 'sellerTaxId' | 'buyerTaxId', picked: { key: string; value: string }): void => {
+    const value = picked.value.replace(/\s/g, '');
+    if (/^[0-9A-Za-z]{15,20}$/.test(value)) {
+      set(field, picked.key, value);
+      return;
+    }
+    issues.push(
+      makeIssue(
+        'tax-id-invalid',
+        'warn',
+        `XML 里的税号形态异常（${value.length} 位），已忽略该字段：${clip(value)}`,
+        field,
+      ),
+    );
+  };
 
-  const date = pick(flat, K.issueDate);
-  if (date) {
-    const d = normalizeDate(date.value);
-    if (d) set('issueDate', date.key, d);
-    else issues.push(makeIssue('date-invalid', 'warn', `开票日期无法识别：${date.value}`, 'issueDate'));
+  /** 只留数字（税号还留字母）：写法与旧版一致，比较/截断都按去空白后的值算 */
+  const squashed = (value: string): string => value.replace(/\s/g, '');
+
+  /** 候选里第一个值过不了校验时，把它写进 issue —— 让人知道「这里有东西，但没收」 */
+  const reportRejected = (
+    field: keyof Invoice,
+    candidates: readonly string[],
+    issueCode: 'invoice-no-shape' | 'tax-id-invalid' | 'date-invalid' | 'field-invalid',
+    message: (value: string) => string,
+  ): void => {
+    const first = pick(flat, candidates);
+    if (!first) return;
+    issues.push(makeIssue(issueCode, 'warn', message(first.value), field));
+  };
+
+  const no = pickWhere(flat, K.invoiceNo, (value) => /^\d{8,20}$/.test(squashed(value)));
+  if (no) set('invoiceNo', no.key, squashed(no.value));
+  else {
+    // 号码是去重的**唯一键**：形状不对就直接不收。
+    // 否则一段乱码也能当「同号票」把真票挤掉（见 dedupe 的 invoice-no 组）。
+    reportRejected(
+      'invoiceNo',
+      K.invoiceNo,
+      'invoice-no-shape',
+      (value) =>
+        `XML 里的发票号码形态异常（${squashed(value).length} 位），已忽略该字段：${clip(value)}`,
+    );
   }
 
-  const seller = pick(flat, K.sellerName);
-  if (seller) set('sellerName', seller.key, seller.value);
-  const sellerTax = pick(flat, K.sellerTaxId);
-  if (sellerTax) set('sellerTaxId', sellerTax.key, sellerTax.value.replace(/\s/g, ''));
+  const code = pickWhere(flat, K.invoiceCode, (value) => /^\d{10,12}$/.test(squashed(value)));
+  if (code) set('invoiceCode', code.key, squashed(code.value));
+  else {
+    // 老票代码 10/12 位；数电票没有代码。放宽到 10–12 位数字。
+    reportRejected(
+      'invoiceCode',
+      K.invoiceCode,
+      'invoice-no-shape',
+      (value) =>
+        `XML 里的发票代码形态异常（${squashed(value).length} 位），已忽略该字段：${clip(value)}`,
+    );
+  }
 
-  const buyer = pick(flat, K.buyerName);
-  if (buyer) set('buyerName', buyer.key, buyer.value);
-  const buyerTax = pick(flat, K.buyerTaxId);
-  if (buyerTax) set('buyerTaxId', buyerTax.key, buyerTax.value.replace(/\s/g, ''));
+  const date = pickWhere(flat, K.issueDate, (value) => normalizeDate(value) !== undefined);
+  if (date) set('issueDate', date.key, normalizeDate(date.value)!);
+  else {
+    reportRejected(
+      'issueDate',
+      K.issueDate,
+      'date-invalid',
+      (value) => `开票日期无法识别：${clip(value)}`,
+    );
+  }
 
-  const amount = pick(flat, K.amount);
-  if (amount) {
-    const c = toCents(amount.value);
-    if (c !== undefined) set('amount', amount.key, c);
+  const seller = pickWhere(flat, K.sellerName, (value) => value.length <= MAX_TEXT_FIELD_CHARS);
+  if (seller) setText('sellerName', seller);
+  else {
+    reportRejected('sellerName', K.sellerName, 'field-invalid', (value) =>
+      `XML 里的字段过长（${value.length} 字，上限 ${MAX_TEXT_FIELD_CHARS}），已忽略：${clip(value)}`,
+    );
   }
-  const tax = pick(flat, K.tax);
-  if (tax) {
-    const c = toCents(tax.value);
-    if (c !== undefined) set('tax', tax.key, c);
+  const sellerTax = pickWhere(flat, K.sellerTaxId, (value) => /^[0-9A-Za-z]{15,20}$/.test(squashed(value)));
+  if (sellerTax) setTaxId('sellerTaxId', sellerTax);
+  else {
+    reportRejected('sellerTaxId', K.sellerTaxId, 'tax-id-invalid', (value) =>
+      `XML 里的税号形态异常（${squashed(value).length} 位），已忽略该字段：${clip(value)}`,
+    );
   }
-  const total = pick(flat, K.total);
-  if (total) {
-    const c = toCents(total.value);
-    if (c !== undefined) set('total', total.key, c);
+
+  const buyer = pickWhere(flat, K.buyerName, (value) => value.length <= MAX_TEXT_FIELD_CHARS);
+  if (buyer) setText('buyerName', buyer);
+  else {
+    reportRejected('buyerName', K.buyerName, 'field-invalid', (value) =>
+      `XML 里的字段过长（${value.length} 字，上限 ${MAX_TEXT_FIELD_CHARS}），已忽略：${clip(value)}`,
+    );
   }
-  const words = pick(flat, K.totalInWords);
+  const buyerTax = pickWhere(flat, K.buyerTaxId, (value) => /^[0-9A-Za-z]{15,20}$/.test(squashed(value)));
+  if (buyerTax) setTaxId('buyerTaxId', buyerTax);
+  else {
+    reportRejected('buyerTaxId', K.buyerTaxId, 'tax-id-invalid', (value) =>
+      `XML 里的税号形态异常（${squashed(value).length} 位），已忽略该字段：${clip(value)}`,
+    );
+  }
+
+  const amount = pickWhere(flat, K.amount, (value) => toCents(value) !== undefined);
+  if (amount) set('amount', amount.key, toCents(amount.value)!);
+  const tax = pickWhere(flat, K.tax, (value) => toCents(value) !== undefined);
+  if (tax) set('tax', tax.key, toCents(tax.value)!);
+  const total = pickWhere(flat, K.total, (value) => toCents(value) !== undefined);
+  if (total) set('total', total.key, toCents(total.value)!);
+  const words = pickWhere(flat, K.totalInWords, (value) => value.length <= MAX_TEXT_FIELD_CHARS);
   if (words) {
-    set('totalInWords', words.key, words.value);
+    setText('totalInWords', words);
     if (fields.total === undefined) {
       const c = capitalToCents(words.value);
       if (c !== undefined) set('total', words.key, c);
+      else {
+        issues.push(
+          makeIssue(
+            'field-invalid',
+            'warn',
+            `大写金额无法识别：${clip(words.value)}`,
+            'totalInWords',
+          ),
+        );
+      }
     }
+  } else {
+    reportRejected('totalInWords', K.totalInWords, 'field-invalid', (value) =>
+      `XML 里的字段过长（${value.length} 字，上限 ${MAX_TEXT_FIELD_CHARS}），已忽略：${clip(value)}`,
+    );
   }
 
   const raw: Record<string, string[]> = {};

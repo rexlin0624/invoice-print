@@ -83,15 +83,24 @@ async function exists(path) {
   }
 }
 
+async function fileSha256(path) {
+  return createHash('sha256').update(await readFile(path)).digest('hex');
+}
+
 async function downloadModel(force) {
   const target = join(OUT_DIR, MODEL.name);
   if (!force && (await exists(target))) {
     const size = (await stat(target)).size;
-    if (size === MODEL.bytes) {
-      console.log(`✓ 语言模型已在：${MODEL.name}（${(size / 1048576).toFixed(1)} MB）`);
+    // 只比大小是不够的：截断后补零、或者同尺寸的替换文件都会「看起来没问题」。
+    // 复用前必须重算 sha256 —— 这就是这个常量存在的意义。
+    const sha = await fileSha256(target);
+    if (size === MODEL.bytes && sha === MODEL.sha256) {
+      console.log(`✓ 语言模型已在：${MODEL.name}（${(size / 1048576).toFixed(1)} MB，sha256 校验通过）`);
       return;
     }
-    console.log(`⚠ 已有的 ${MODEL.name} 大小不对（${size} ≠ ${MODEL.bytes}），重新下载`);
+    console.log(
+      `⚠ 已有的 ${MODEL.name} 校验不通过（${size} 字节，sha256 ${sha.slice(0, 12)}…），重新下载`,
+    );
   }
 
   console.log(`↓ 下载语言模型 ${MODEL.name}（约 20 MB，一次性）…`);

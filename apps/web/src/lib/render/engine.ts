@@ -49,6 +49,15 @@ const BLACK_WHITE_LEVEL = 170;
 const DEFAULT_MAX_SCALE = 4;
 /** 1 英寸 = 72 pt（PDF 的用户单位）：`dpi` 换算成倍率用 */
 const PT_PER_INCH = 72;
+/**
+ * 单次渲染的画布上限。
+ *
+ * 一个 `/MediaBox [0 0 20000 20000]` 的 PDF 在 200 dpi 下是 55k×55k 画布
+ * （约 12 GB RGBA）。真实发票再大也用不到 40 MP（A4 600 dpi ≈ 35 MP），
+ * 超过就降倍率，**在分配画布之前**降。
+ */
+const MAX_RENDER_PIXELS = 40 * 1024 * 1024;
+const MAX_RENDER_SIDE = 16_384;
 
 /**
  * 开一块画布。优先 `OffscreenCanvas` —— 它在 Worker 里是唯一选择，
@@ -93,7 +102,7 @@ export class RenderCanvasFactory {
   }
 
   create(width: number, height: number): { canvas: AnyCanvas; context: AnyContext } {
-    if (width <= 0 || height <= 0) throw new Error('Invalid canvas size');
+    RenderCanvasFactory.checkSize(width, height);
     const canvas = newCanvas(width, height);
     const context = canvas.getContext('2d', {
       willReadFrequently: !this.enableHWA,
@@ -104,9 +113,25 @@ export class RenderCanvasFactory {
 
   reset(entry: { canvas: AnyCanvas | null }, width: number, height: number): void {
     if (!entry.canvas) throw new Error('Canvas is not specified');
-    if (width <= 0 || height <= 0) throw new Error('Invalid canvas size');
+    RenderCanvasFactory.checkSize(width, height);
     entry.canvas.width = width;
     entry.canvas.height = height;
+  }
+
+  /**
+   * 辅助画布的尺寸是 **PDF 内容算出来的**（蒙版、图案填充），不受我们的主画布倍率约束。
+   * 一张 crafted 文件可以让 pdfjs 在这里申请几 GB 的画布 —— 和主画布共用同一套上限，
+   * 超了就抛异常（渲染失败总比把标签页搞崩强）。
+   */
+  private static checkSize(width: number, height: number): void {
+    if (width <= 0 || height <= 0) throw new Error('Invalid canvas size');
+    if (
+      width > MAX_RENDER_SIDE ||
+      height > MAX_RENDER_SIDE ||
+      width * height > MAX_RENDER_PIXELS
+    ) {
+      throw new Error(`辅助画布过大（${width}×${height}），超过渲染上限`);
+    }
   }
 
   destroy(entry: { canvas: AnyCanvas | null; context?: AnyContext | null }): void {
@@ -183,6 +208,73 @@ function resolveScale(args: RenderRequest, region: Box): number {
     return Math.min(args.maxWidthPx / region.w, args.maxScale ?? DEFAULT_MAX_SCALE);
   }
   return (args.dpi ?? 200) / PT_PER_INCH;
+}
+
+/** 把倍率压到「画布不超过上限」。必须在 `newContext` 之前调用。 */
+function fitScale(scale: number, region: Box): number {
+  const pixels = region.w * region.h;
+  if (!Number.isFinite(scale) || scale <= 0) scale = 1;
+  if (!Number.isFinite(pixels) || pixels <= 0) return 1;
+  const byPixels = Math.sqrt(MAX_RENDER_PIXELS / pixels);
+  const bySide = MAX_RENDER_SIDE / Math.max(region.w, region.h);
+  // 不设下限：`Math.max(..., 1e-6)` 会把 1e10×1e10 的页面重新放大到 1e8 像素，
+  // 上限就白设了。极小倍率的画布由 `canvasSize()` 兜到 1 px。
+  return Math.min(scale, byPixels, bySide);
+}
+
+/**
+ * 画布尺寸：倍率算完之后再兜一次，保证 `newContext` 拿到的宽高一定在上限内。
+ * 四舍五入会让 40 MP 变成 40.0x MP，所以这里按比例收，而不是只 `Math.min` 单边。
+ */
+function canvasSize(region: Box, scale: number): { width: number; height: number } {
+  let width = Math.max(1, Math.round(region.w * scale));
+  let height = Math.max(1, Math.round(region.h * scale));
+  const byPixels = Math.sqrt((width * height) / MAX_RENDER_PIXELS);
+  const bySide = Math.max(width, height) / MAX_RENDER_SIDE;
+  const shrink = Math.max(1, byPixels, bySide);
+  if (shrink > 1) {
+    width = Math.max(1, Math.floor(width / shrink));
+    height = Math.max(1, Math.floor(height / shrink));
+  }
+  return { width, height };
+}
+
+/**
+ * 定稿「画多大、按什么倍率画」。
+ *
+ * 尺寸被 `canvasSize()` 收窄之后，绘制倍率必须跟着收 —— 否则内容还是按原倍率画，
+ * 超出的部分被裁掉（PDF 是 `regionRenderArgs` 的变换，图片是 `drawImage` 的目标框）。
+ * 取两轴的较小值，保证内容不会溢出画布（最多留 1 px 空白）。
+ */
+function planCanvas(region: Box, scale: number): { scale: number; width: number; height: number } {
+  const { width, height } = canvasSize(region, scale);
+  // 没被收窄就原样返回：正常渲染（包括 e2e 的像素基线）走的还是原来的倍率
+  if (width === Math.round(region.w * scale) && height === Math.round(region.h * scale)) {
+    return { scale, width, height };
+  }
+  const fitted = Math.min(width / region.w, height / region.h);
+  return { scale: Number.isFinite(fitted) && fitted > 0 ? fitted : scale, width, height };
+}
+
+/** 页面尺寸本身可能是 NaN / Infinity / 0（来自 crafted `/MediaBox`） */
+function saneBase(base: { width: number; height: number }): { width: number; height: number } {
+  const width = Number.isFinite(base.width) && base.width > 0 ? base.width : 595.28;
+  const height = Number.isFinite(base.height) && base.height > 0 ? base.height : 396.85;
+  return { width, height };
+}
+
+/** 渲染区域也必须落在页面内：负数/NaN/越界都会变成无效画布尺寸 */
+function normalizeRegion(region: Box, base: { width: number; height: number }): Box {
+  const clamp = (value: number, max: number): number =>
+    Number.isFinite(value) ? Math.min(Math.max(value, 0), max) : 0;
+  const x = clamp(region.x, base.width);
+  const y = clamp(region.y, base.height);
+  return {
+    x,
+    y,
+    w: clamp(region.w, base.width - x),
+    h: clamp(region.h, base.height - y),
+  };
 }
 
 /** 阈值化成纯黑白（保留白底） */
@@ -316,17 +408,20 @@ async function finish(painted: Painted, args: RenderRequest): Promise<RenderResu
 async function renderPdfPage(args: RenderRequest): Promise<RenderResult> {
   const doc = await openDocument(args.bytes);
   try {
-    const page = await doc.getPage((args.pageIndex ?? 0) + 1);
+    const requested = Math.trunc(Number(args.pageIndex ?? 0));
+    // 页号可能来自被改过的工程文件：NaN / Infinity 会让 getPage 抛错
+    const pageNumber = Number.isFinite(requested)
+      ? Math.min(Math.max(requested, 0), Math.max(doc.numPages, 1) - 1) + 1
+      : 1;
+    const page = await doc.getPage(pageNumber);
     const viewport = page.getViewport({ scale: 1 });
-    const base = { width: viewport.width, height: viewport.height };
+    const base = saneBase({ width: viewport.width, height: viewport.height });
 
     if (args.probe) return probeResult(base);
 
-    const region = resolveRegion(args, base);
+    const region = normalizeRegion(resolveRegion(args, base), base);
     if (region.w <= 0 || region.h <= 0) throw new Error('渲染失败：渲染区域为空');
-    const scale = resolveScale(args, region);
-    const width = Math.max(1, Math.round(region.w * scale));
-    const height = Math.max(1, Math.round(region.h * scale));
+    const { scale, width, height } = planCanvas(region, fitScale(resolveScale(args, region), region));
 
     const ctx = newContext(width, height, args.encode == null || args.blackWhite === true);
     // 区域渲染参数由内核算（viewport 必须 scale 1，否则缩放会被平方，见 regionRenderArgs）
@@ -341,18 +436,103 @@ async function renderPdfPage(args: RenderRequest): Promise<RenderResult> {
   }
 }
 
-/** 渲染一张图片（png/jpg）：没有文字层，坐标就是像素 */
+/**
+ * 不解码，先从文件头读图片尺寸。
+ *
+ * `createImageBitmap` 会**按原始像素解码**：一张 30000×30000 的 1-bit PNG
+ * 只有 ~100 KB，解码却是 3.6 GB —— 缩略图、自动探测墨水都会触发它。
+ * 所以在分配任何位图之前，先从头里把宽高读出来。
+ */
+export function imageDimensions(bytes: ArrayBuffer): { width: number; height: number } | undefined {
+  const d = new Uint8Array(bytes);
+  // PNG：签名 + IHDR（宽高各 4 字节，大端）
+  if (
+    d.length >= 24 &&
+    d[0] === 0x89 && d[1] === 0x50 && d[2] === 0x4e && d[3] === 0x47 &&
+    d[12] === 0x49 && d[13] === 0x48 && d[14] === 0x44 && d[15] === 0x52
+  ) {
+    const view = new DataView(bytes);
+    return { width: view.getUint32(16, false), height: view.getUint32(20, false) };
+  }
+
+  // JPEG：从 SOI 开始找 SOFn（C0–CF，排除 C4/C8/CC），高度在 +5、宽度在 +7
+  if (d.length >= 4 && d[0] === 0xff && d[1] === 0xd8) {
+    let at = 2;
+    while (at + 9 < d.length) {
+      if (d[at] !== 0xff) {
+        at += 1;
+        continue;
+      }
+      // 0xFF 是 marker 前的**填充字节**，规范允许出现任意多个（`FF FF E0 …`）。
+      // 不跳过的话会把填充字节当成 marker，长度读到错的偏移上，一张合法 JPEG
+      // 就被判成「无法识别的图片格式」而拒绝渲染。
+      if (d[at + 1] === 0xff) {
+        at += 1;
+        continue;
+      }
+      const marker = d[at + 1]!;
+      if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
+        at += 2;
+        continue;
+      }
+      const length = (d[at + 2]! << 8) | d[at + 3]!;
+      if (length < 2) return undefined;
+      const isSof = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc;
+      if (isSof) {
+        return {
+          height: (d[at + 5]! << 8) | d[at + 6]!,
+          width: (d[at + 7]! << 8) | d[at + 8]!,
+        };
+      }
+      at += 2 + length;
+    }
+    return undefined;
+  }
+
+  // BMP：宽高各 4 字节，小端；高为负表示自上而下
+  if (d.length >= 26 && d[0] === 0x42 && d[1] === 0x4d) {
+    const view = new DataView(bytes);
+    return {
+      width: Math.abs(view.getInt32(18, true)),
+      height: Math.abs(view.getInt32(22, true)),
+    };
+  }
+
+  return undefined;
+}
+
+/**
+ * 渲染一张图片（png/jpg）：没有文字层，坐标就是像素。
+ *
+ * 顺序很关键：**先读文件头判断尺寸，再解码**。头部读不出来就拒绝（不做无上限的解码），
+ * 头里报的尺寸超限也直接拒绝 —— 这样 30000×30000 的 1-bit PNG 连 `createImageBitmap`
+ * 都进不去。通过检查之后，解码出来的尺寸才是几何真值（EXIF 方向会交换宽高），
+ * 所以布局与区域都按 `bitmap` 的宽高算。
+ */
 async function renderImageFile(args: RenderRequest): Promise<RenderResult> {
+  const measured = imageDimensions(args.bytes);
+  if (measured === undefined) throw new Error('渲染失败：无法识别的图片格式');
+
+  const declared = saneBase(measured);
+  const pixels = declared.width * declared.height;
+  if (
+    !Number.isFinite(pixels) ||
+    pixels > MAX_RENDER_PIXELS ||
+    Math.max(declared.width, declared.height) > MAX_RENDER_SIDE
+  ) {
+    throw new Error(
+      `图片尺寸过大（${Math.round(declared.width)}×${Math.round(declared.height)}），超过渲染上限 ${MAX_RENDER_SIDE} 像素 / ${MAX_RENDER_PIXELS / (1024 * 1024)} MP，已跳过。`,
+    );
+  }
+
   const bitmap = await createImageBitmap(new Blob([args.bytes]));
   try {
-    const base = { width: bitmap.width, height: bitmap.height };
+    const base = saneBase({ width: bitmap.width, height: bitmap.height });
     if (args.probe) return probeResult(base);
 
-    const region = resolveRegion(args, base);
+    const region = normalizeRegion(resolveRegion(args, base), base);
     if (region.w <= 0 || region.h <= 0) throw new Error('渲染失败：渲染区域为空');
-    const scale = resolveScale(args, region);
-    const width = Math.max(1, Math.round(region.w * scale));
-    const height = Math.max(1, Math.round(region.h * scale));
+    const { scale, width, height } = planCanvas(region, fitScale(resolveScale(args, region), region));
 
     const ctx = newContext(width, height, args.encode == null || args.blackWhite === true);
     ctx.drawImage(bitmap, region.x, region.y, region.w, region.h, 0, 0, width, height);

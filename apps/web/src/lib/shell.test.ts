@@ -167,6 +167,15 @@ describe('应用信息与日志', () => {
     const text = new TextDecoder().decode(calls[0]!.payload as Uint8Array);
     expect(text).toMatch(/^\d{4}-\d{2}-\d{2}T[\d:.]+Z print ok: 已发送$/);
   });
+
+  it('日志里的换行/控制字符被压成空格，不能伪造条目', async () => {
+    const { calls } = installShell(() => 0);
+    logLine('read failed: a.pdf\n2026-01-01T00:00:00.000Z backup restored: 99 条');
+    const text = new TextDecoder().decode(calls[0]!.payload as Uint8Array);
+    // 换行在 Rust 侧统一补；这里不该再有任何换行
+    expect(text).not.toContain('\n');
+    expect(text).toContain('read failed: a.pdf 2026-01-01T00:00:00.000Z backup restored: 99 条');
+  });
 });
 
 describe('选择发票', () => {

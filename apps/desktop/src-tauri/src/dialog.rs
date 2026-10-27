@@ -6,8 +6,8 @@
 //!
 //! ⚠️ `blocking_*` 只能在 **async 命令**里调：它内部 `run_on_main_thread` 把对话框
 //! 丢回主线程再阻塞等结果。同步命令若跑在主线程上，就是死锁。
-//! 另外：路径**不做白名单**，因为前端就是我们自己打包的页面（外壳可信模型）；
-//! 真正需要防手滑的是 `store` 模块那种「按名字在数据目录里定位」的地方。
+//! 选出来的路径会写进 `TrustedPaths` —— 后续 `read_document` / `open_path` 只认这份清单。
+//! 渲染层自己编一个路径调命令会被拒绝。
 
 use serde::Serialize;
 use tauri_plugin_dialog::DialogExt;
@@ -23,7 +23,10 @@ pub struct PickedFile {
 
 /// 选发票：多选，过滤 PDF / OFD / XML / ZIP。**取消返回空数组**，不是错误。
 #[tauri::command]
-pub async fn pick_documents(app: tauri::AppHandle) -> Result<Vec<PickedFile>, String> {
+pub async fn pick_documents(
+    app: tauri::AppHandle,
+    trusted: tauri::State<'_, crate::files::TrustedPaths>,
+) -> Result<Vec<PickedFile>, String> {
     let picked = app
         .dialog()
         .file()
@@ -36,10 +39,14 @@ pub async fn pick_documents(app: tauri::AppHandle) -> Result<Vec<PickedFile>, St
         .unwrap_or_default()
         .into_iter()
         .filter_map(|file| file.into_path().ok())
-        .map(|path| PickedFile {
-            name: file_name_of(&path),
-            size: std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0),
-            path: path.to_string_lossy().to_string(),
+        .map(|path| {
+            // 用户亲自选的 → 只有这些路径允许后续 `read_document`
+            trusted.trust(&path);
+            PickedFile {
+                name: file_name_of(&path),
+                size: std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0),
+                path: path.to_string_lossy().to_string(),
+            }
         })
         .collect())
 }

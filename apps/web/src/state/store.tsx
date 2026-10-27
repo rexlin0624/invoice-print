@@ -95,6 +95,31 @@ const DEFAULT_PREFS: Prefs = {
   ocr: true,
 };
 
+/**
+ * localStorage 里的 `prefs` 也是**外部输入**（同机其他程序、旧版本、手改都能写）。
+ * 只取认识的键、类型不对就回默认值，别把任意对象当设置用：
+ * `companyTaxId` 会进校验与导出，布尔值走 `if (prefs.autoDedupe)` 这类判断，
+ * 一个字符串 `"false"` 反而为真。
+ */
+function normalizePrefs(value: unknown): Prefs {
+  const source = (typeof value === 'object' && value !== null ? value : {}) as Partial<
+    Record<keyof Prefs, unknown>
+  >;
+  const text = (v: unknown, fallback: string, maxLength: number): string =>
+    typeof v === 'string' ? v.slice(0, maxLength) : fallback;
+  const flag = (v: unknown, fallback: boolean): boolean =>
+    typeof v === 'boolean' ? v : fallback;
+
+  return {
+    companyName: text(source.companyName, DEFAULT_PREFS.companyName, 200),
+    companyTaxId: text(source.companyTaxId, DEFAULT_PREFS.companyTaxId, 64),
+    autoDedupe: flag(source.autoDedupe, DEFAULT_PREFS.autoDedupe),
+    remindReimburse: flag(source.remindReimburse, DEFAULT_PREFS.remindReimburse),
+    saveLibrary: flag(source.saveLibrary, DEFAULT_PREFS.saveLibrary),
+    ocr: flag(source.ocr, DEFAULT_PREFS.ocr),
+  };
+}
+
 export function initialState(): AppState {
   return {
     view: 'merge',
@@ -105,7 +130,7 @@ export function initialState(): AppState {
     dedupeGroups: [],
     dedupeUndone: false,
     settings: normalizeLayoutSettings(loadJson<LayoutSettings>(SETTINGS_KEY, DEFAULT_LAYOUT_SETTINGS)),
-    prefs: loadJson<Prefs>(PREFS_KEY, DEFAULT_PREFS),
+    prefs: normalizePrefs(loadJson<Prefs>(PREFS_KEY, DEFAULT_PREFS)),
     drawerOpen: false,
     helpOpen: false,
     selectedId: null,
@@ -316,7 +341,7 @@ export function reducer(state: AppState, action: Action): AppState {
       return reducer(state, { type: 'settings', patch: { orientation: action.orientation } });
 
     case 'prefs': {
-      const prefs = { ...state.prefs, ...action.patch };
+      const prefs = normalizePrefs({ ...state.prefs, ...action.patch });
       saveJson(PREFS_KEY, prefs);
       const toggled =
         action.patch.autoDedupe !== undefined && action.patch.autoDedupe !== state.prefs.autoDedupe;

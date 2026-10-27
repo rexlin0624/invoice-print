@@ -80,6 +80,10 @@ export type IssueCode =
   | 'no-text-layer'
   | 'unsupported-format'
   | 'parse-failed'
+  /** 文件超过解析预算（XML 体积 / 压缩包解压后体积） */
+  | 'file-too-large'
+  /** PDF 声明的页数超过上限，已按上限处理 */
+  | 'page-count-clamped'
   | 'low-confidence'
   // 二维码相关
   /** 二维码与票面文字层对同一件事给出了不同答案 —— 必须人工核对 */
@@ -101,6 +105,8 @@ export type IssueCode =
   | 'capital-mismatch'
   | 'tax-id-invalid'
   | 'invoice-no-shape'
+  /** 字段形状/长度不合理，已被忽略（不会进入去重与打印） */
+  | 'field-invalid'
   | 'missing-field'
   | 'date-invalid'
   // 去重 / 报销相关
@@ -325,6 +331,15 @@ export function invoiceTotal(invoice: Pick<Invoice, 'total' | 'amount' | 'tax'>)
 }
 
 /**
+ * 一张票最多按多少页处理。
+ *
+ * 页数会被预览、排版、打印**逐页展开**，所以它不能直接采信文件里的 `/Count`：
+ * 一个 1 KB 的 PDF 可以声明 20 亿页。500 页对发票来说已经非常宽松
+ * （医疗票据的明细页通常也就几页）。
+ */
+export const MAX_INVOICE_PAGES = 500;
+
+/**
  * 实际要打印的**源文件页下标**（0 基，顺序即打印顺序）。
  *
  * 排版与打印都按「第几张要打的页」说话（`Slot.page` 是这个序号），
@@ -334,7 +349,12 @@ export function invoiceTotal(invoice: Pick<Invoice, 'total' | 'amount' | 'tax'>)
 export function printablePages(inv: Pick<Invoice, 'pageCount' | 'skipPages'>): number[] {
   const skip = new Set(inv.skipPages ?? []);
   const out: number[] = [];
-  for (let i = 0; i < Math.max(1, inv.pageCount); i++) {
+  // 解析层已经夹过一次；这里再夹一次是兜底：页数可能来自旧备份或手改的库记录。
+  // `Math.trunc(NaN)` 还是 NaN，`Math.max(1, NaN)` 也还是 NaN —— 必须单独判掉，
+  // 否则整页列表会变成空的（最后靠下面那行兜成 [0]）。
+  const raw = Math.trunc(inv.pageCount);
+  const count = Number.isNaN(raw) ? 1 : Math.min(Math.max(1, raw), MAX_INVOICE_PAGES);
+  for (let i = 0; i < count; i++) {
     if (!skip.has(i)) out.push(i);
   }
   // 理论上 skipPages 不会把页剔光（见 parse/medical.ts 的安全边界），兜一手

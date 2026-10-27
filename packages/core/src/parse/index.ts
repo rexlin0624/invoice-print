@@ -10,7 +10,16 @@
 import JSZip from 'jszip';
 
 import type { Invoice, Issue } from '../model/invoice';
-import { makeIssue, SOURCE_CONFIDENCE } from '../model/invoice';
+import { MAX_INVOICE_PAGES, makeIssue, SOURCE_CONFIDENCE } from '../model/invoice';
+import type { ArchiveLimits } from './limits';
+import {
+  ArchiveLimitError,
+  declaredSize,
+  formatMb,
+  MAX_XML_BYTES,
+  readCapped,
+  resolveLimits,
+} from './limits';
 import type { DocumentText, TextToken } from '../text/lines';
 import { buildDocumentText, buildPageText } from '../text/lines';
 import type { InvoiceExtraction } from './fields';
@@ -20,6 +29,8 @@ import { parsePdfText } from './pdfText';
 import { detectMedicalDetailPages } from './medical';
 import { parseInvoiceXml } from './xml';
 import { crossCheckQr, extractFromQr, kindFromQr, parseQrPayload } from './qr';
+
+export { ArchiveLimitError } from './limits';
 
 export type FileFormat = 'pdf' | 'ofd' | 'xml' | 'zip' | 'image' | 'unknown';
 
@@ -111,18 +122,60 @@ export interface ArchiveEntry {
   data: Uint8Array;
 }
 
-/** 展开压缩包（只取一层，不支持嵌套压缩包）。挑出可能是发票的文件。 */
-export async function expandArchive(data: Uint8Array): Promise<ArchiveEntry[]> {
+/**
+ * 展开压缩包（只取一层，不支持嵌套压缩包）。挑出可能是发票的文件。
+ *
+ * **预算在执行前就定好**：先看中央目录声明的解压后大小，再流式解压并累计总字节。
+ * 旧实现是「全部解压完再截断 200 条」，一个几 MB 的压缩炸弹就能把标签页撑爆 ——
+ * 而这条路径收的正是陌生人给的包。
+ *
+ * 超过单条/总预算时抛 `ArchiveLimitError`；超过条数上限时**只展开前 N 条**，
+ * 与旧行为一致（用户要是真给了 300 张，至少能先把前 200 张处理完）。
+ */
+export async function expandArchive(
+  data: Uint8Array,
+  limits: ArchiveLimits = {},
+): Promise<ArchiveEntry[]> {
+  const { maxEntries, maxEntryBytes, maxTotalBytes } = resolveLimits(limits);
   const zip = await JSZip.loadAsync(data);
   const out: ArchiveEntry[] = [];
+  let total = 0;
   const names = Object.keys(zip.files).sort();
+
   for (const name of names) {
+    if (out.length >= maxEntries) break;
     const file = zip.files[name];
     if (!file || file.dir) continue;
     if (name.startsWith('__MACOSX/') || name.endsWith('.DS_Store')) continue;
     if (!/\.(pdf|ofd|xml|jpg|jpeg|png)$/i.test(name)) continue;
-    out.push({ name: name.split('/').pop() ?? name, data: await file.async('uint8array') });
+
+    const declared = declaredSize(file);
+    if (declared !== undefined && declared > maxEntryBytes) {
+      throw new ArchiveLimitError(
+        `压缩包里的「${name.split('/').pop() ?? name}」解压后约 ${formatMb(declared)}，` +
+          `超过单张 ${formatMb(maxEntryBytes)} 的上限，已取消导入。`,
+      );
+    }
+
+    const budget = Math.min(maxEntryBytes, maxTotalBytes - total);
+    if (budget <= 0) {
+      throw new ArchiveLimitError(
+        `压缩包解压后超过 ${formatMb(maxTotalBytes)} 的上限，已取消导入。`,
+      );
+    }
+
+    const bytes = await readCapped(file, budget);
+    if (bytes === undefined) {
+      throw new ArchiveLimitError(
+        `压缩包解压后超过 ${formatMb(maxTotalBytes)} 的上限（或单个文件超过 ` +
+          `${formatMb(maxEntryBytes)}），已取消导入。`,
+      );
+    }
+
+    total += bytes.byteLength;
+    out.push({ name: name.split('/').pop() ?? name, data: bytes });
   }
+
   return out;
 }
 
@@ -237,6 +290,16 @@ export async function parseInvoiceFile(input: ParseInput): Promise<ParseOutcome>
   try {
     switch (format) {
       case 'xml': {
+        if (input.data.byteLength > MAX_XML_BYTES) {
+          invoice.issues.push(
+            makeIssue(
+              'file-too-large',
+              'warn',
+              `XML 文件超过 ${formatMb(MAX_XML_BYTES)}，已跳过解析。`,
+            ),
+          );
+          break;
+        }
         const text = new TextDecoder().decode(input.data);
         const result = parseInvoiceXml(text);
         mergeExtraction(invoice, result, 'xml');
@@ -245,6 +308,8 @@ export async function parseInvoiceFile(input: ParseInput): Promise<ParseOutcome>
 
       case 'ofd': {
         const result = await parseOfd(input.data);
+        // 先把诊断信息收进来：翻页上限、附件读不了之类的提示，在成功路径上也要看得见
+        invoice.issues.push(...result.issues);
         if (result.xml) {
           mergeExtraction(invoice, result.xml, 'ofd');
         }
@@ -252,7 +317,7 @@ export async function parseInvoiceFile(input: ParseInput): Promise<ParseOutcome>
           const extraction = extractInvoiceFields(result.pages);
           mergeExtraction(invoice, extraction, 'pdf-text');
           const first = result.pages[0]!;
-          invoice.pageCount = result.pages.length;
+          invoice.pageCount = Math.min(result.pages.length, MAX_INVOICE_PAGES);
           applyQr();
           return {
             invoice,
@@ -260,7 +325,6 @@ export async function parseInvoiceFile(input: ParseInput): Promise<ParseOutcome>
             contentSize: { width: first.width, height: first.height },
           };
         }
-        invoice.issues.push(...result.issues);
         break;
       }
 
@@ -269,7 +333,18 @@ export async function parseInvoiceFile(input: ParseInput): Promise<ParseOutcome>
         if (error !== undefined) {
           invoice.issues.push(makeIssue('parse-failed', 'error', `PDF 文字层解析失败：${error}`));
         }
-        invoice.pageCount = pageCount;
+        // `/Count` 是文件自己说的，不能直接拿去建数组：后面的预览、排版、打印都按它展开。
+        const declaredPages = Number.isFinite(pageCount) ? Math.trunc(pageCount) : 0;
+        invoice.pageCount = Math.min(Math.max(declaredPages, 1), MAX_INVOICE_PAGES);
+        if (declaredPages > MAX_INVOICE_PAGES) {
+          invoice.issues.push(
+            makeIssue(
+              'page-count-clamped',
+              'warn',
+              `PDF 声明了 ${declaredPages} 页，超过 ${MAX_INVOICE_PAGES} 页的上限，只按前 ${MAX_INVOICE_PAGES} 页处理。`,
+            ),
+          );
+        }
 
         /** 没有文字层时的兜底文档（OCR 的结果），用于取字段与预览 */
         const fallback = document.hasText ? undefined : ocrDocument(input);

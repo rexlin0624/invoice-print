@@ -71,10 +71,26 @@ export interface IntakeOptions {
 
 const MAX_ARCHIVE_ENTRIES = 200;
 
+/**
+ * 单个文件的体积上限：200 MB。
+ *
+ * 这不是「机器扛不住」的阈值，而是**拦住明显不是发票的东西**：
+ * 扫描件 300 dpi A4 约 8 MB，200 MB 已经是一本画册。
+ * 更大的文件在读进内存之前就拒绝，别等 `arrayBuffer()` 把标签页撑爆。
+ */
+const MAX_FILE_BYTES = 200 * 1024 * 1024;
+
+function formatMb(bytes: number): string {
+  return `${Math.round(bytes / (1024 * 1024))} MB`;
+}
+
 /** OCR 要读的页上限：一张扫描件多页票全认会非常慢，前几页足够取出票面字段 */
 const MAX_OCR_PAGES = 3;
 
 async function fileToBytes(file: File): Promise<Uint8Array> {
+  if (file.size > MAX_FILE_BYTES) {
+    throw new Error(`「${file.name}」有 ${formatMb(file.size)}，超过 ${formatMb(MAX_FILE_BYTES)} 的单文件上限，已跳过。`);
+  }
   return new Uint8Array(await file.arrayBuffer());
 }
 
@@ -355,6 +371,11 @@ export async function intakeBytes(
       emit();
     };
     try {
+      if (entry.data.byteLength > MAX_FILE_BYTES) {
+        throw new Error(
+          `「${entry.name}」有 ${formatMb(entry.data.byteLength)}，超过 ${formatMb(MAX_FILE_BYTES)} 的单文件上限，已跳过。`,
+        );
+      }
       return [await parseOne(entry.name, entry.data, { ocr, onNote })];
     } catch (err) {
       return [failedItem(entry.name, entry.data.byteLength, err)];

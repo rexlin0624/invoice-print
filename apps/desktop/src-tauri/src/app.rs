@@ -47,6 +47,12 @@ pub(crate) fn ensure_data_dir<R: tauri::Runtime>(
         .map_err(|e| format!("拿不到应用数据目录：{e}"))?;
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("建不了数据目录（{}）：{e}", dir.display()))?;
+    // 目录里是发票备份与日志（金额、税号、票面）：Unix 下只给当前用户
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    }
     Ok(dir)
 }
 
