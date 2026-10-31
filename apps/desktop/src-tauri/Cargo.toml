@@ -1,6 +1,6 @@
 [package]
 name = "invoice-tool-desktop"
-version = "0.3.0"
+version = "0.4.0"
 description = "发票工具桌面版（Tauri 外壳）"
 authors = ["invoice-tool"]
 license = "MIT"
