@@ -21,6 +21,7 @@
 import type { OcrPageInput } from '@invoice-tool/core';
 import type { createWorker } from 'tesseract.js';
 
+import { ocrAssetResponseIsUsable } from './ocrNotice';
 import { renderPage, resultBytes } from './render/client';
 
 const OCR_BASE = new URL(`${import.meta.env.BASE_URL}ocr/`, document.baseURI).href;
@@ -73,7 +74,9 @@ export async function ocrAssetsReady(): Promise<boolean> {
     const res = await fetch(`${LANG_PATH}${LANG}.traineddata.gz`, {
       method: 'HEAD',
     });
-    return res.ok;
+    // 只看 res.ok 会被 SPA 兜底骗过（缺失路径回成 200 + index.html），
+    // 必须再看 Content-Type —— 否则模型没装时 OCR 静默失败，用户一头雾水。
+    return ocrAssetResponseIsUsable(res.ok, res.headers.get('content-type'));
   } catch {
     return false;
   }

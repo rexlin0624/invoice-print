@@ -122,7 +122,7 @@ function normalizePrefs(value: unknown): Prefs {
 
 export function initialState(): AppState {
   return {
-    view: 'merge',
+    view: 'dedupe',
     items: [],
     status: 'empty',
     progress: null,

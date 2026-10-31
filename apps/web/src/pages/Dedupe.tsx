@@ -2,6 +2,7 @@ import { findDuplicates, isAutoDropLevel } from '@invoice-tool/core';
 import { useMemo, useState } from 'react';
 
 import { EmptyState } from '../components/EmptyState';
+import { OcrNoticeBanner } from '../components/OcrNoticeBanner';
 import { money } from '../lib/format';
 import { useStore } from '../state/store';
 
@@ -21,6 +22,8 @@ export function Dedupe() {
 
   /** 用户手动改过「留哪张」的分组（group 的 keep 换成另一个 id） */
   const [chosen, setChosen] = useState<Record<number, string>>({});
+  /** 非「确定重复」的分区默认折叠，避免首屏一次铺开四段 */
+  const [showUncertain, setShowUncertain] = useState(false);
 
   const items = state.items;
   const byId = useMemo(() => new Map(items.map((it) => [it.id, it])), [items]);
@@ -52,6 +55,11 @@ export function Dedupe() {
       items.reduce((sum, it) => (skipped.has(it.id) ? sum + (it.invoice.total ?? 0) : sum), 0),
     [items, skipped],
   );
+  const total = useMemo(
+    () => items.reduce((sum, it) => sum + (it.invoice.total ?? 0), 0),
+    [items],
+  );
+  const uncertainCount = ocrCollisions.length + conflicts.length + suspected.length;
 
   const applyGroup = (ids: string[], keepId: string): void => {
     dispatch({ type: 'skip/many', ids: ids.filter((id) => id !== keepId), skip: true });
@@ -66,8 +74,13 @@ export function Dedupe() {
     return (
       <EmptyState
         dragOver={false}
-        title="查重"
-        lead="先导入发票，再检查有没有重复。"
+        title="把发票拖进来，本机自动识别并查重"
+        lead="先看有没有重复；需要排版打印或导出，再从「更多」进入。"
+        links={[
+          { label: '排版打印', view: 'merge' },
+          { label: '导出 Excel', view: 'excel' },
+          { label: '凑票', view: 'combine' },
+        ]}
       />
     );
   }
@@ -84,6 +97,14 @@ export function Dedupe() {
         </div>
         <span className="spacer" />
         <div className="stat">
+          <b>{items.length}</b>
+          <span>张发票</span>
+        </div>
+        <div className="stat">
+          <b>{money(total)}</b>
+          <span>合计金额</span>
+        </div>
+        <div className="stat">
           <b>{skippedCount}</b>
           <span>张已跳过</span>
         </div>
@@ -92,6 +113,8 @@ export function Dedupe() {
           <span>不重复计入的金额</span>
         </div>
       </div>
+
+      <OcrNoticeBanner />
 
       <div className="page-body">
         {groups.length === 0 && (
@@ -169,6 +192,29 @@ export function Dedupe() {
           </section>
         )}
 
+        {uncertainCount > 0 && (
+          <section className="card">
+            <div className="dupe-head">
+              <div>
+                <h2>还有 {uncertainCount} 组待确认</h2>
+                <p className="muted">
+                  同号但字段对不上、OCR 撞号、疑似重复。默认都打印，确认后再决定。
+                </p>
+              </div>
+              <span className="spacer" />
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={() => setShowUncertain((open) => !open)}
+              >
+                {showUncertain ? '收起' : '展开查看'}
+              </button>
+            </div>
+          </section>
+        )}
+
+        {showUncertain && (
+          <>
         {conflicts.length > 0 && (
           <section className="card">
             <h2>
@@ -347,6 +393,8 @@ export function Dedupe() {
               </div>
             ))}
           </section>
+        )}
+          </>
         )}
       </div>
 

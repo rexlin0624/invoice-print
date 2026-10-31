@@ -16,11 +16,16 @@
  */
 
 import { PDFDocument, rgb } from 'pdf-lib';
+import { createElement } from 'react';
+import { createRoot } from 'react-dom/client';
 
 import { detectContentBox, imageSize, rasterizeImage, rasterizePage } from '../src/lib/raster';
 import { renderEngineInUse, renderPage, resultBytes, resultPixels } from '../src/lib/render/client';
 import { decodeQrFromPdf } from '../src/lib/qr';
 import { thumbnailFor } from '../src/lib/thumb';
+import { TopNav } from '../src/components/TopNav';
+import { StoreProvider } from '../src/state/store';
+import '../src/styles.css';
 
 /** 夹具页尺寸（pt），特意不是 A4，免得「恰好相等」掩盖单位错误 */
 const PAGE = { width: 400, height: 300 };
@@ -335,6 +340,44 @@ async function main(): Promise<void> {
     maxGap < 2000,
     `3 页@200dpi，主线程最长停顿 ${maxGap.toFixed(0)} ms（信息项，仅防「整段卡死」）`,
   );
+
+  // —— 12. 「更多」下拉必须完整可见，不能被导航条裁剪 ——
+  // 回归守卫：.more-menu 一旦（再次）被放进 .tabs（overflow-x:auto，按 CSS
+  // 规则此时 overflow-y 也算 auto），绝对定位的弹层就会被裁进导航条。
+  // 用 elementFromPoint 验「弹层中心真的露在最上层」，不靠肉眼看截图。
+  let navDetail = '';
+  let navOk = false;
+  try {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    root.render(createElement(StoreProvider, null, createElement(TopNav)));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const moreBtn = [...host.querySelectorAll<HTMLButtonElement>('.more-menu > button')].find(
+      (b) => b.textContent === '更多',
+    );
+    if (!moreBtn) throw new Error('没找到「更多」按钮');
+    moreBtn.click();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const tabs = host.querySelector<HTMLElement>('.tabs');
+    const pop = host.querySelector<HTMLElement>('.more-menu-pop');
+    if (!tabs || !pop) throw new Error('点开「更多」后没找到 .more-menu-pop');
+    const popRect = pop.getBoundingClientRect();
+    const tabsRect = tabs.getBoundingClientRect();
+    const topEl = document.elementFromPoint(
+      popRect.left + popRect.width / 2,
+      popRect.top + popRect.height / 2,
+    );
+    navOk = topEl !== null && pop.contains(topEl);
+    navDetail =
+      `弹层 bottom=${Math.round(popRect.bottom)}，导航条 bottom=${Math.round(tabsRect.bottom)}，` +
+      `tabs overflow-y=${getComputedStyle(tabs).overflowY}，弹层中心最上层元素=${topEl?.className || topEl?.tagName || 'null'}`;
+    root.unmount();
+    host.remove();
+  } catch (err) {
+    navDetail = `失败：${err instanceof Error ? err.message : String(err)}`;
+  }
+  check('「更多」下拉不被导航条裁剪', navOk, navDetail);
 
   void pdfBuffer;
 }

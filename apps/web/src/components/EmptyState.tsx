@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { devSampleNames, loadDevSamples } from '../lib/devSamples';
+import type { ViewKey } from '../state/store';
+import { useStore } from '../state/store';
 import { useIntake } from '../state/useIntake';
 import { CheckIcon, UploadIcon } from './icons';
 
@@ -10,12 +12,20 @@ interface Props {
   title?: string;
   /** 空状态的一句话说明 */
   lead?: string;
+  /** 次要入口：主流程之外的能力，按需进入 */
+  links?: Array<{ label: string; view: ViewKey }>;
 }
 
-const CHECKS = ['全电 / 数电发票', '自动识别金额与销售方', '重复发票自动跳过', '一页 2 / 4 张'];
+const CHECKS = [
+  '自动识别金额与销售方',
+  '重复发票自动跳过',
+  '支持 PDF / OFD / XML / ZIP',
+  '文件不上传，只在本机处理',
+];
 
-export function EmptyState({ dragOver, title, lead }: Props) {
+export function EmptyState({ dragOver, title, lead, links }: Props) {
   const { intake, accept } = useIntake();
+  const { dispatch } = useStore();
   const input = useRef<HTMLInputElement>(null);
   const [devNames, setDevNames] = useState<string[]>([]);
 
@@ -65,6 +75,21 @@ export function EmptyState({ dragOver, title, lead }: Props) {
           </li>
         ))}
       </ul>
+
+      {links && links.length > 0 && (
+        <p className="empty-links">
+          {links.map((link) => (
+            <button
+              key={link.view}
+              type="button"
+              className="link"
+              onClick={() => dispatch({ type: 'view', view: link.view })}
+            >
+              {link.label}
+            </button>
+          ))}
+        </p>
+      )}
 
       <p className="paste-hint">
         扫描件与图片用本机 OCR 识别（离线，不联网）。发票一直在你的电脑上，不上传、不注册。
