@@ -6,59 +6,54 @@
  */
 
 import { createHash } from 'node:crypto';
-import { readdir, readFile } from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
-import { extname, join } from 'node:path';
+import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 
 import type { Invoice } from '../src/model/invoice';
 import type { ParseOutcome } from '../src/parse/index';
 import { parseInvoiceFile } from '../src/parse/index';
 import { validateInvoice } from '../src/validate/index';
+import { loadSamples, resolveSamplesDir, samplesDirWasExplicit } from './helpers/samples';
 
-const SAMPLES_DIR = fileURLToPath(new URL('../../../samples', import.meta.url));
-const EXTS = new Set(['.pdf', '.ofd', '.xml']);
+const SAMPLES_DIR = resolveSamplesDir();
+const explicitDir = samplesDirWasExplicit();
+const { samples, ignored } = await loadSamples(SAMPLES_DIR);
 
-interface Sample {
-  name: string;
-  file: string;
-  expected: Record<string, unknown>;
+/**
+ * 没有基线的票必须**看得见**。
+ *
+ * 静默漏掉一张票和「本来就没样本」在输出上一模一样，而前者会让回归少跑一张还没人知道。
+ * 显式 `SAMPLES_DIR` 时直接判失败（你指过去的目录，每张票都该有基线）；
+ * 默认目录只警告 —— 那里可能有开发时临时扔进去的文件。
+ */
+if (ignored.length > 0) {
+  console.warn(
+    `[samples] ${ignored.length} 张票缺同名 .expected.json，未纳入回归：\n  ${ignored.join('\n  ')}`,
+  );
 }
 
-async function loadSamples(): Promise<Sample[]> {
-  const found: Sample[] = [];
-  let dirs: string[] = [];
-  try {
-    dirs = (await readdir(SAMPLES_DIR, { withFileTypes: true }))
-      .filter((d) => d.isDirectory())
-      .map((d) => join(SAMPLES_DIR, d.name));
-  } catch {
-    return [];
-  }
+/**
+ * 没有任何样本时整组跳过 —— 但**只在没显式指定目录时**。
+ *
+ * `SAMPLES_DIR` 指过去却一张都没找到，说明路径错了、或者期望文件没写，
+ * 这时跳过等于「静默空跑一轮回归」，比红掉危险得多。
+ */
+describe.skipIf(samples.length === 0 && !explicitDir)('真实样本回归', () => {
+  it('找到了可用的样本', () => {
+    const detail =
+      ignored.length > 0
+        ? `；另有 ${ignored.length} 个票缺同名 .expected.json：${ignored.join(', ')}`
+        : '';
+    expect(
+      samples.length,
+      `在 ${SAMPLES_DIR} 下没找到「票 + 同名 .expected.json」${detail}`,
+    ).toBeGreaterThan(0);
+  });
 
-  for (const dir of dirs) {
-    let entries: string[];
-    try {
-      entries = await readdir(dir);
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      if (!EXTS.has(extname(entry).toLowerCase())) continue;
-      const expectedName = `${entry.replace(/\.[^.]+$/, '')}.expected.json`;
-      if (!entries.includes(expectedName)) continue;
-      const expected = JSON.parse(await readFile(join(dir, expectedName), 'utf8')) as Record<string, unknown>;
-      found.push({ name: entry, file: join(dir, entry), expected });
-    }
-  }
-  return found;
-}
-
-const samples = await loadSamples();
-
-describe.skipIf(samples.length === 0)('真实样本回归', () => {
-  it(`找到 ${samples.length} 张样本`, () => {
-    expect(samples.length).toBeGreaterThan(0);
+  // 显式指定目录时，缺基线的票会让这轮回归少跑一张却依然「全绿」，
+  // 所以要红。默认目录只警告（见文件顶部）。
+  it.skipIf(!explicitDir)('显式目录里的每张票都写了基线', () => {
+    expect(ignored, `缺同名 .expected.json：${ignored.join(', ')}`).toEqual([]);
   });
 
   for (const sample of samples) {
@@ -89,7 +84,13 @@ describe.skipIf(samples.length === 0)('真实样本回归', () => {
        */
       it('解析后调用方的字节仍可读（不被 transfer）', () => {
         expect(data.byteLength).toBeGreaterThan(0);
-        expect(data.subarray(0, 5)).toEqual(new TextEncoder().encode('%PDF-'));
+        // 全量读一遍并比对哈希：detached 的 ArrayBuffer 在这里会直接抛，
+        // 而不只是「前 5 个字节」那一小段还能读。
+        expect(createHash('sha256').update(data).digest('hex')).toBe(invoice.sha256);
+        // PDF 的魔数只在 PDF 上检查：OFD 是 zip、XML 是文本，硬套 %PDF- 会误报。
+        if (sample.name.toLowerCase().endsWith('.pdf')) {
+          expect(data.subarray(0, 5)).toEqual(new TextEncoder().encode('%PDF-'));
+        }
       });
 
       it('字段与基线一致', () => {

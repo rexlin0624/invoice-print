@@ -12,6 +12,7 @@
     "build": "pnpm --filter @invoice-tool/web build",
     "preview": "pnpm --filter @invoice-tool/web preview",
     "test": "pnpm -r test",
+    "test:samples": "pnpm --filter @invoice-tool/core test:samples",
     "e2e": "pnpm --filter @invoice-tool/web e2e",
     "test:watch": "pnpm -r --parallel test:watch",
     "typecheck": "pnpm -r typecheck",
