@@ -259,6 +259,25 @@ const PATCH_FIELDS = [
   'skipPages',
 ] as const;
 
+/**
+ * 红冲结论所依赖的「证据字段」。
+ *
+ * `isRed` 在解析期往往是**推出来的**（金额为负 / 大写金额写了「负」），
+ * 但它会被持久化到 `Invoice` 上。不主动作废就会留下过期结论：
+ * 把 -5000 人工改成 +6000 之后，`isRed` 仍是 `true`，`invoiceTotal()` 照旧算出
+ * -6000 —— 用户改的那一刀等于没改。
+ *
+ * 所以校正时按**来源**区分（见 `applyCorrection`）：
+ * - `derived`：只是推断，证据字段一变就丢掉，让 `isRedInvoice()` 按新值重新推；
+ * - 票面「红字/红冲」字样、人工标记：是独立事实，保留，矛盾交给 `validateInvoice()` 报 warn。
+ */
+const RED_EVIDENCE_FIELDS: ReadonlySet<keyof Invoice> = new Set([
+  'total',
+  'amount',
+  'tax',
+  'totalInWords',
+]);
+
 /** 归一化后比较「号码有没有真的变」（空串与 undefined 视为同一件事） */
 function sameText(a: string | undefined, b: string | null | undefined): boolean {
   const left = (a ?? '').trim();
@@ -318,6 +337,21 @@ export function applyCorrection(invoice: Invoice, patch: CorrectPatch): Invoice 
 
   if (touched.size > 0) {
     next.issues = invoice.issues.filter((issue) => !(issue.field && touched.has(issue.field)));
+  }
+  // 「推算出来的」红冲结论随证据一起失效。
+  //
+  // 只清 `derived`：票面写着「红字/红冲」、或人工标过的方向是**独立事实**，
+  // 不能因为改了金额就丢掉 —— 那种矛盾应该由 validate 报 warn 让人看见。
+  // 清掉之后 `isRedInvoice()` 立刻按新值重新推：改成正数就不再是红冲，
+  // 只改绝对值（-5000 → -6000）则仍然是红冲。
+  const redWasDerived =
+    invoice.isRed !== undefined && invoice.provenance.isRed?.source === 'derived';
+  const redEvidenceTouched = [...RED_EVIDENCE_FIELDS].some((field) => touched.has(field));
+  if (redWasDerived && redEvidenceTouched && patch.isRed === undefined) {
+    clearField(next, 'isRed');
+    delete provenance.isRed;
+    // 说明也是按旧值写的（「金额为负，已按红冲处理」），一并作废
+    next.issues = next.issues.filter((issue) => issue.code !== 'red-invoice');
   }
   // 人工定了「是不是红冲」，所有自动得出的红冲结论就都过期了 —— 哪怕那条 issue 的
   // field 指向的是「给证据的那一格」（大写金额 / 价税合计），用户改的却是 `isRed`。

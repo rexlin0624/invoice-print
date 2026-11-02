@@ -263,6 +263,96 @@ describe('人工校正 isRed 会清掉自动红冲结论', () => {
   });
 });
 
+describe('人工改了金额后，推算出来的红冲结论要重算', () => {
+  /**
+   * 解析器给出的 -5000 红冲票：`isRed` 是 `settle()` 推出来的（`derived`）。
+   * 改金额之前不把它作废，就会出现「用户改成 +6000，合计却还是 -6000」。
+   */
+  const parsedRed = () =>
+    inv({
+      total: -500000,
+      isRed: true,
+      provenance: {
+        total: { source: 'pdf-text', confidence: 0.85 },
+        isRed: { source: 'derived', confidence: 0.9 },
+      },
+      issues: [
+        {
+          code: 'red-invoice',
+          level: 'info',
+          message: '识别为红冲（负数）发票：金额为负，将从合计中抵扣，且不参与凑票。',
+          field: 'total',
+        },
+      ],
+    });
+
+  it('把 -5000 改成 +6000 → 重新推断成正常票，合计 +6000', () => {
+    const after = applyCorrection(parsedRed(), { total: 600000 });
+    expect(after.isRed).toBeUndefined();
+    expect(after.provenance.isRed).toBeUndefined();
+    expect(isRedInvoice(after)).toBe(false);
+    expect(invoiceTotal(after)).toBe(600000);
+    expect(after.issues.some((i) => i.code === 'red-invoice')).toBe(false);
+    // 校验不能再拿旧方向说事
+    expect(validateInvoice(after).filter((i) => i.code === 'red-invoice')).toEqual([]);
+  });
+
+  it('只改绝对值（-5000 → -6000）→ 仍然是红冲，合计 -6000', () => {
+    const after = applyCorrection(parsedRed(), { total: -600000 });
+    expect(after.isRed).toBeUndefined();
+    expect(isRedInvoice(after)).toBe(true);
+    expect(invoiceTotal(after)).toBe(-600000);
+  });
+
+  it('改不含税金额 / 税额 / 大写金额同样会重算', () => {
+    const byAmount = parsedRed();
+    const after = applyCorrection(byAmount, { amount: 600000, total: null });
+    expect(after.isRed).toBeUndefined();
+    expect(invoiceTotal(after)).toBeUndefined(); // 没有 total、tax 也没给
+    expect(isRedInvoice(after)).toBe(false);
+  });
+
+  it('改无关字段（销售方）→ 推算结论保留', () => {
+    const after = applyCorrection(parsedRed(), { sellerName: '某某公司' });
+    expect(after.isRed).toBe(true);
+    expect(invoiceTotal(after)).toBe(-500000);
+  });
+
+  it('正常正数票人工改成负数 → 自动成为红冲（不需要先标 isRed）', () => {
+    const after = applyCorrection(inv({ total: 500000 }), { total: -500000 });
+    expect(after.isRed).toBeUndefined();
+    expect(isRedInvoice(after)).toBe(true);
+    expect(invoiceTotal(after)).toBe(-500000);
+  });
+
+  it('票面「红字/红冲」字样得出的结论不是 derived → 改金额也不丢，矛盾交给 warn', () => {
+    const before = inv({
+      total: -500000,
+      isRed: true,
+      provenance: {
+        total: { source: 'pdf-text', confidence: 0.85 },
+        isRed: { source: 'pdf-text', confidence: 0.85 },
+      },
+    });
+    const after = applyCorrection(before, { total: 600000 });
+    expect(after.isRed).toBe(true);
+    expect(invoiceTotal(after)).toBe(-600000);
+    expect(
+      validateInvoice(after).some((i) => i.code === 'red-invoice' && i.level === 'warn'),
+    ).toBe(true);
+  });
+
+  it('人工写死的方向（manual）不会被改金额翻掉', () => {
+    const before = applyCorrection(parsedRed(), { isRed: false });
+    const after = applyCorrection(before, { total: -700000 });
+    expect(after.isRed).toBe(false);
+    expect(invoiceTotal(after)).toBe(-700000);
+    expect(
+      validateInvoice(after).some((i) => i.code === 'red-invoice' && i.level === 'warn'),
+    ).toBe(true);
+  });
+});
+
 describe('redMagnitude —— 抵扣额是正数', () => {
   it('取绝对值', () => {
     expect(redMagnitude(redInvoice())).toBe(500000);

@@ -123,6 +123,34 @@ describe('校正表单：打印哪些页', () => {
   });
 });
 
+describe('校正表单：红冲方向', () => {
+  it('没标过的票 → auto，不改就不提交', () => {
+    const inv = invoice({ total: -500000 });
+    expect(toForm(inv).isRed).toBe('auto');
+    expect(diffPatch(toForm(inv), inv).patch.isRed).toBeUndefined();
+  });
+
+  it('人工标成「不是红冲」→ 提交 false；标成红冲 → 提交 true', () => {
+    const inv = invoice({ total: -500000 });
+    expect(diffPatch({ ...toForm(inv), isRed: 'no' }, inv).patch.isRed).toBe(false);
+    expect(diffPatch({ ...toForm(inv), isRed: 'yes' }, inv).patch.isRed).toBe(true);
+  });
+
+  it('从人工值改回「自动」→ 提交 null（清掉标记，回到按金额推断）', () => {
+    const inv = invoice({ total: 500000, isRed: true });
+    expect(toForm(inv).isRed).toBe('yes');
+    expect(diffPatch({ ...toForm(inv), isRed: 'auto' }, inv).patch.isRed).toBeNull();
+  });
+
+  it('与内核拼起来：勾「不是红冲」后，-5000 的票按正数口径不再抵扣', () => {
+    const inv = invoice({ total: -500000, isRed: true });
+    const { patch } = diffPatch({ ...toForm(inv), isRed: 'no' }, inv);
+    const next = applyCorrection(inv, patch);
+    expect(next.isRed).toBe(false);
+    expect(next.provenance.isRed).toEqual({ source: 'manual', confidence: 1 });
+  });
+});
+
 describe('校正表单：与内核拼起来能用', () => {
   it('差分出来的补丁交给 applyCorrection，字段与出处都对', () => {
     const inv = invoice({

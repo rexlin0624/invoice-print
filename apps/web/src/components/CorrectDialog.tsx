@@ -17,10 +17,10 @@
  */
 
 import type { CorrectPatch, Invoice, InvoiceKind } from '@invoice-tool/core';
-import { INVOICE_KIND_LABEL, correctedFields, decimalToCents } from '@invoice-tool/core';
+import { INVOICE_KIND_LABEL, correctedFields, decimalToCents, isRedInvoice } from '@invoice-tool/core';
 import { useEffect, useMemo, useState } from 'react';
 
-import type { CorrectForm, ItemForm } from '../lib/correctForm';
+import type { CorrectForm, ItemForm, RedChoice } from '../lib/correctForm';
 import { diffPatch, emptyRow, toForm } from '../lib/correctForm';
 import { money } from '../lib/format';
 import { PageViewer, type ViewerSource } from './PageViewer';
@@ -106,6 +106,15 @@ export function CorrectDialog({ invoice, source, onSave, onClose }: Props) {
       ? (decimalToCents(form.amount.trim() || '0') ?? 0) + (decimalToCents(form.tax.trim() || '0') ?? 0)
       : undefined;
   const mismatch = formTotal !== undefined && sumParts !== undefined && formTotal !== sumParts && sumParts > 0;
+
+  // 表单里的「自动判断」会判成什么 —— 用当前草稿算，而不是旧 invoice，
+  // 这样改完金额立刻就能看到方向有没有跟着变（与保存后的内核口径同一个函数）。
+  const draftIsRed = isRedInvoice({
+    isRed: form.isRed === 'auto' ? undefined : form.isRed === 'yes',
+    total: form.total.trim() === '' ? undefined : formTotal,
+    amount: form.amount.trim() === '' ? undefined : decimalToCents(form.amount.trim()),
+    totalInWords: form.totalInWords.trim() === '' ? undefined : form.totalInWords,
+  });
 
   return (
     <>
@@ -212,6 +221,25 @@ export function CorrectDialog({ invoice, source, onSave, onClose }: Props) {
               </Field>
               <Field label="价税合计（大写）" hint={hintOf(invoice, 'totalInWords')}>
                 <input type="text" placeholder="壹佰贰拾叁元肆角伍分" value={form.totalInWords} onChange={(e) => set('totalInWords', e.target.value)} />
+              </Field>
+              {/*
+                方向必须能人工改：它是**记账口径**（汇总抵扣、凑票排除、查重配对），
+                不是展示细节。自动判断会随金额/大写实时变化，所以这里既给三态，
+                也把「自动会判成什么」写出来 —— 用户改完金额就能立刻看到后果。
+              */}
+              <Field
+                label="红冲（负数）"
+                hint={
+                  form.isRed === 'auto'
+                    ? `自动判断：${draftIsRed ? '红冲（从合计中抵扣）' : '正常票'}`
+                    : '人工指定，优先于金额与票面字样'
+                }
+              >
+                <select value={form.isRed} onChange={(e) => set('isRed', e.target.value as RedChoice)}>
+                  <option value="auto">自动判断（按金额/大写）</option>
+                  <option value="yes">是红冲（从合计中抵扣）</option>
+                  <option value="no">不是红冲</option>
+                </select>
               </Field>
               <Field
                 label="校验码"

@@ -40,6 +40,7 @@ export interface CorrectForm {
   total: string;
   totalInWords: string;
   checkCode: string;
+  isRed: RedChoice;
   items: ItemForm[];
   /** 勾上的页 = 要**打印**的页（与 `invoice.skipPages` 互补） */
   pages: number[];
@@ -59,6 +60,12 @@ export const TEXT_FIELDS = [
 ] as const;
 
 export const MONEY_FIELDS = ['amount', 'tax', 'total'] as const;
+
+/**
+ * 「红冲」在表单里的三态，和内核对 `isRed` 的三态一一对应：
+ * `auto` = 不写这个键（按金额/大写推断），`yes`/`no` = 人工写死。
+ */
+export type RedChoice = 'auto' | 'yes' | 'no';
 
 const MONEY_LABEL: Record<(typeof MONEY_FIELDS)[number], string> = {
   amount: '不含税金额',
@@ -103,6 +110,7 @@ export function toForm(inv: Invoice): CorrectForm {
     total: inv.total === undefined ? '' : centsToFixed(inv.total),
     totalInWords: inv.totalInWords ?? '',
     checkCode: inv.checkCode ?? '',
+    isRed: inv.isRed === true ? 'yes' : inv.isRed === false ? 'no' : 'auto',
     items: inv.items.map(itemToRow),
     pages: printPagesOf(inv),
   };
@@ -214,6 +222,12 @@ export function diffPatch(form: CorrectForm, inv: Invoice): { patch: CorrectPatc
       (i) => !pages.includes(i),
     );
   }
+
+  // 红冲方向同样是三态：auto 不出现（回到按金额推断），yes/no 写死，null 清回 auto。
+  // 只在真的变了时才提交 —— 否则没动过这一格的票全会被贴上「人工填写」。
+  const redBefore = inv.isRed ?? null;
+  const redAfter = form.isRed === 'auto' ? null : form.isRed === 'yes';
+  if (redAfter !== redBefore) patch.isRed = redAfter;
 
   return { patch, errors };
 }
