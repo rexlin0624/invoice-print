@@ -173,6 +173,17 @@ describe('wordsSayNegative —— 只认写在金额前面的「负」', () => {
     expect(say('負伍仟圓整')).toBe(true);
   });
 
+  it('负号写在前面（自研模板 / 全角化）也认', () => {
+    expect(say('-伍仟圆整')).toBe(true);
+    expect(say('－伍仟圆整')).toBe(true);
+  });
+
+  it('方向写在金额后面的括号里也认，但括号里得就是「负 / 负数」', () => {
+    expect(say('伍仟圆整（负）')).toBe(true);
+    expect(say('伍仟圆整（负数）')).toBe(true);
+    expect(say('伍仟圆整(负数)')).toBe(true);
+  });
+
   it('「负」出现在金额之后（备注、说明）不算方向证据', () => {
     expect(say('伍仟圆整（备注：不负任何责任）')).toBe(false);
     expect(say('伍仟圆整 负号见小写')).toBe(false);

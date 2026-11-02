@@ -396,6 +396,9 @@ export function amountIsNegative(
 /** 大写金额正文里会出现的字符（正体 + 繁体「萬/圓」+ 常见异写） */
 const WORDS_AMOUNT_CHAR = /[零壹贰叁肆伍陆柒捌玖拾佰仟萬万亿圓圆元角分整正〇]/;
 
+/** 方向写在金额后面的括号里：『伍仟圆整（负）』『伍仟圆整（负数）』 */
+const WORDS_SIGNED_SUFFIX = /[（(]\s*负(?:数)?\s*[)）]\s*$/;
+
 /**
  * 大写金额里带「负」字（部分红冲票只在这里体现方向）。
  *
@@ -403,8 +406,13 @@ const WORDS_AMOUNT_CHAR = /[零壹贰叁肆伍陆柒捌玖拾佰仟萬万亿圓�
  * （`parse/xml.ts` 只限长度），「伍仟圆整（备注：不负任何责任）」这种备注就会
  * 让一张正常票被静默按负数入账 —— 金额直接变负、进合计、还可能和原票配成红冲对。
  *
- * 所以要求「负」出现在**金额正文之前**：允许前面有「人民币」「（负）」这类修饰，
- * 一旦出现金额字符就不再认。繁体「負」一并认（有些票面/OCR 会混用）。
+ * 所以认三种写法，别的一概不认：
+ * 1. 方向在金额正文**之前**：`负伍仟圆整`、`（负）伍仟圆整`、`人民币负伍仟圆整`；
+ * 2. 方向是金额前面的负号：`-伍仟圆整`、`－伍仟圆整`（自研模板/全角化会这么拼）；
+ * 3. 方向写在金额**之后**的括号里：`伍仟圆整（负）`、`伍仟圆整（负数）` ——
+ *    只认「括号里就是负/负数」，`（备注：不负任何责任）` 这类不算。
+ *
+ * 繁体「負」一并认（有些票面/OCR 会混用）。
  */
 export function wordsSayNegative(invoice: Pick<Invoice, 'totalInWords'>): boolean {
   const words = invoice.totalInWords;
@@ -412,7 +420,9 @@ export function wordsSayNegative(invoice: Pick<Invoice, 'totalInWords'>): boolea
   const firstAmount = words.search(WORDS_AMOUNT_CHAR);
   // 一个金额字符都没有，就不是大写金额，别拿它当方向证据
   if (firstAmount === -1) return false;
-  return /[负負]/.test(words.slice(0, firstAmount));
+  const head = words.slice(0, firstAmount);
+  if (/[负負\-－—]/.test(head)) return true;
+  return WORDS_SIGNED_SUFFIX.test(words);
 }
 
 /**
