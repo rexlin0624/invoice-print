@@ -14,7 +14,7 @@ import { findDuplicates, isAutoDropLevel } from '../src/dedupe/index';
 import { buildExportTable } from '../src/export/invoices';
 import { summarizeBatch, summaryText } from '../src/export/summary';
 import type { Invoice } from '../src/model/invoice';
-import { applyCorrection, invoiceTotal, isRedInvoice, redMagnitude } from '../src/model/invoice';
+import { applyCorrection, invoiceTotal, isRedInvoice, redMagnitude, wordsSayNegative } from '../src/model/invoice';
 import { extractInvoiceFields } from '../src/parse/fields';
 import { parseInvoiceFile } from '../src/parse/index';
 import { buildPageText } from '../src/text/lines';
@@ -144,6 +144,111 @@ describe('方向只在大写金额里（小写漏负号）', () => {
     const issue = parsed.issues.find((i) => i.code === 'red-invoice');
     expect(issue?.field).toBe('totalInWords');
     expect(issue?.message).toContain('大写金额');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 「负」字认得不能太宽
+//
+// totalInWords 在 XML/OFD 路径上是自由文本（只限长度），一个 `test(/负/)` 就会让
+// 「伍仟圆整（备注：不负任何责任）」这类备注把正常票静默变成红冲 —— 金额变负、
+// 进合计、甚至和原票配成红冲对。方向必须写在金额正文之前才算数。
+// ---------------------------------------------------------------------------
+
+describe('wordsSayNegative —— 只认写在金额前面的「负」', () => {
+  const say = (totalInWords: string | undefined) =>
+    wordsSayNegative({ totalInWords });
+
+  it('标准的「负伍仟圆整」', () => {
+    expect(say('负伍仟圆整')).toBe(true);
+  });
+
+  it('带括号 / 人民币前缀 / 空格都算', () => {
+    expect(say('（负）伍仟圆整')).toBe(true);
+    expect(say('人民币负伍仟圆整')).toBe(true);
+    expect(say(' 负伍仟圆整')).toBe(true);
+  });
+
+  it('繁体「負」也认', () => {
+    expect(say('負伍仟圓整')).toBe(true);
+  });
+
+  it('「负」出现在金额之后（备注、说明）不算方向证据', () => {
+    expect(say('伍仟圆整（备注：不负任何责任）')).toBe(false);
+    expect(say('伍仟圆整 负号见小写')).toBe(false);
+  });
+
+  it('没有金额字符就不是大写金额，别拿它当证据', () => {
+    expect(say('不负任何责任')).toBe(false);
+    expect(say('')).toBe(false);
+    expect(say(undefined)).toBe(false);
+  });
+
+  it('XML 里大写夹带「负」字的备注，不能把正常票变成红冲', async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<Invoice xmlns="http://www.chinatax.gov.cn/einv">
+  <Main>
+    <InvoiceNumber>12345678901234567892</InvoiceNumber>
+    <IssueDate>2026-06-19</IssueDate>
+    <AmountWithoutTax>4716.98</AmountWithoutTax>
+    <TotalTax>283.02</TotalTax>
+    <TotalAmountWithTax>5000.00</TotalAmountWithTax>
+    <TotalAmountInWords>伍仟圆整（备注：不负任何责任）</TotalAmountInWords>
+  </Main>
+</Invoice>`;
+
+    const outcome = await parseInvoiceFile({
+      id: 'words2',
+      fileName: 'note.xml',
+      data: new TextEncoder().encode(xml),
+      sha256: 'words2',
+    });
+    expect(outcome.invoice.isRed).toBeUndefined();
+    expect(invoiceTotal(outcome.invoice)).toBe(500000);
+    expect(summarizeBatch([outcome.invoice]).redCount).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 人工定过方向后，自动得出的红冲结论必须一起作废
+// ---------------------------------------------------------------------------
+
+describe('人工校正 isRed 会清掉自动红冲结论', () => {
+  it('改成「不是红冲」后不再残留「识别为红冲」的说明', () => {
+    const before = inv({ total: 500000, totalInWords: '负伍仟圆整' });
+    const withIssue = {
+      ...before,
+      isRed: true as const,
+      provenance: { isRed: { source: 'derived' as const, confidence: 0.9 } },
+      issues: [
+        {
+          code: 'red-invoice' as const,
+          level: 'info' as const,
+          message: '识别为红冲（负数）发票：大写金额里带「负」…',
+          field: 'totalInWords' as const,
+        },
+      ],
+    };
+    const after = applyCorrection(withIssue, { isRed: false });
+    expect(after.isRed).toBe(false);
+    expect(after.issues.some((i) => i.code === 'red-invoice')).toBe(false);
+  });
+
+  it('改别的字段时不误伤红冲说明', () => {
+    const before = inv({ total: 500000 });
+    const withIssue = {
+      ...before,
+      issues: [
+        {
+          code: 'red-invoice' as const,
+          level: 'warn' as const,
+          message: '标记为红冲，但价税合计是正数',
+          field: 'total' as const,
+        },
+      ],
+    };
+    const after = applyCorrection(withIssue, { sellerName: '某某公司' });
+    expect(after.issues.some((i) => i.code === 'red-invoice')).toBe(true);
   });
 });
 

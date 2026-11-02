@@ -319,6 +319,12 @@ export function applyCorrection(invoice: Invoice, patch: CorrectPatch): Invoice 
   if (touched.size > 0) {
     next.issues = invoice.issues.filter((issue) => !(issue.field && touched.has(issue.field)));
   }
+  // 人工定了「是不是红冲」，所有自动得出的红冲结论就都过期了 —— 哪怕那条 issue 的
+  // field 指向的是「给证据的那一格」（大写金额 / 价税合计），用户改的却是 `isRed`。
+  // 不按 code 再清一次，界面上会同时挂着「识别为红冲」和「已标记为不是红冲」。
+  if (touched.has('isRed' as keyof Invoice)) {
+    next.issues = next.issues.filter((issue) => issue.code !== 'red-invoice');
+  }
   return next;
 }
 
@@ -387,9 +393,26 @@ export function amountIsNegative(
   return (invoice.total !== undefined && invoice.total < 0) || (invoice.amount !== undefined && invoice.amount < 0);
 }
 
-/** 大写金额里带「负」字（部分红冲票只在这里体现方向） */
+/** 大写金额正文里会出现的字符（正体 + 繁体「萬/圓」+ 常见异写） */
+const WORDS_AMOUNT_CHAR = /[零壹贰叁肆伍陆柒捌玖拾佰仟萬万亿圓圆元角分整正〇]/;
+
+/**
+ * 大写金额里带「负」字（部分红冲票只在这里体现方向）。
+ *
+ * **不能简单 `test(/负/)`**：`totalInWords` 在 XML / OFD 路径上是自由文本
+ * （`parse/xml.ts` 只限长度），「伍仟圆整（备注：不负任何责任）」这种备注就会
+ * 让一张正常票被静默按负数入账 —— 金额直接变负、进合计、还可能和原票配成红冲对。
+ *
+ * 所以要求「负」出现在**金额正文之前**：允许前面有「人民币」「（负）」这类修饰，
+ * 一旦出现金额字符就不再认。繁体「負」一并认（有些票面/OCR 会混用）。
+ */
 export function wordsSayNegative(invoice: Pick<Invoice, 'totalInWords'>): boolean {
-  return invoice.totalInWords !== undefined && /负/.test(invoice.totalInWords);
+  const words = invoice.totalInWords;
+  if (words === undefined) return false;
+  const firstAmount = words.search(WORDS_AMOUNT_CHAR);
+  // 一个金额字符都没有，就不是大写金额，别拿它当方向证据
+  if (firstAmount === -1) return false;
+  return /[负負]/.test(words.slice(0, firstAmount));
 }
 
 /**
