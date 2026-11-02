@@ -42,6 +42,93 @@ interface Result {
 
 const results: Result[] = [];
 
+/**
+ * 网络调用记录。
+ *
+ * `performance.getEntriesByType('resource')` 看不到 WebSocket、`sendBeacon`、
+ * Worker 内部的请求，所以这里在**调用点**再记一层。两层的并集才算「整页有没有出网」。
+ * 只记「尝试」，不做拦截 —— 被 CSP 拦掉的请求同样应该被算作「尝试过」。
+ */
+const networkAttempts: string[] = [];
+
+function recordAttempt(url: string, kind: string): void {
+  networkAttempts.push(`${kind} ${url}`);
+}
+
+/** 装在所有用例跑之前；只包一层，行为不变 */
+function instrumentNetwork(): void {
+  if (typeof globalThis.fetch === 'function') {
+    const native = globalThis.fetch.bind(globalThis);
+    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      const url =
+        typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      recordAttempt(url, 'fetch');
+      return native(input, init);
+    }) as typeof fetch;
+  }
+
+  if (typeof XMLHttpRequest !== 'undefined') {
+    const nativeOpen = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function (
+      this: XMLHttpRequest,
+      method: string,
+      url: string | URL,
+      ...rest: unknown[]
+    ) {
+      recordAttempt(String(url), 'xhr');
+      return (nativeOpen as unknown as (...args: unknown[]) => void).call(
+        this,
+        method,
+        url,
+        ...rest,
+      );
+    } as typeof XMLHttpRequest.prototype.open;
+  }
+
+  if (typeof globalThis.WebSocket === 'function') {
+    const NativeWebSocket = globalThis.WebSocket;
+    class TrackedWebSocket extends NativeWebSocket {
+      constructor(url: string | URL, protocols?: string | string[]) {
+        recordAttempt(String(url), 'websocket');
+        super(url, protocols);
+      }
+    }
+    globalThis.WebSocket = TrackedWebSocket as typeof WebSocket;
+  }
+
+  if (typeof globalThis.EventSource === 'function') {
+    const NativeEventSource = globalThis.EventSource;
+    class TrackedEventSource extends NativeEventSource {
+      constructor(url: string | URL, config?: EventSourceInit) {
+        recordAttempt(String(url), 'eventsource');
+        super(url, config);
+      }
+    }
+    globalThis.EventSource = TrackedEventSource as typeof EventSource;
+  }
+
+  if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
+    const nativeSendBeacon = navigator.sendBeacon.bind(navigator);
+    navigator.sendBeacon = ((url: string | URL, data?: BodyInit | null) => {
+      recordAttempt(String(url), 'beacon');
+      return nativeSendBeacon(url, data);
+    }) as typeof navigator.sendBeacon;
+  }
+
+  if (typeof globalThis.Worker === 'function') {
+    const NativeWorker = globalThis.Worker;
+    class TrackedWorker extends NativeWorker {
+      constructor(url: string | URL, options?: WorkerOptions) {
+        recordAttempt(String(url), 'worker');
+        super(url, options);
+      }
+    }
+    globalThis.Worker = TrackedWorker as typeof Worker;
+  }
+}
+
+instrumentNetwork();
+
 function check(name: string, ok: boolean, detail: string): void {
   results.push({ name, ok, detail });
 }
@@ -382,6 +469,49 @@ async function main(): Promise<void> {
   void pdfBuffer;
 }
 
+/**
+ * 全程零外部请求。
+ *
+ * 放在 `main()` **之后**统一断言，而不是逐个用例写：要保证的是「整个页面生命周期里
+ * 一次跨源请求都没有」，而不是「某条路径没有」。隐私承诺是整页级别的，断言也应该是。
+ *
+ * 两个来源取并集：
+ * 1. Resource Timing（实际发生的 http/https 资源加载）；
+ * 2. `instrumentNetwork()` 在调用点记下的尝试（WebSocket / beacon / Worker / XHR）。
+ *
+ * 只统计会出网的协议（http/https/ws/wss）：`data:` / `blob:` 是本地管道（缩略图、打印 PDF）。
+ * 用 host 而不是 origin 比较，否则 `ws://same-host` 会因为协议不同被当成跨源。
+ * report 自己的 POST 发生在这一步之后，不会把自己算进去。
+ */
+function checkNoExternalRequests(): void {
+  const fromTiming = (performance.getEntriesByType('resource') as PerformanceResourceTiming[]).map(
+    (entry) => entry.name,
+  );
+  const candidates = [
+    ...fromTiming.map((name) => `resource ${name}`),
+    ...networkAttempts,
+  ];
+
+  const external = candidates.filter((entry) => {
+    const raw = entry.replace(/^\w+ /, '');
+    try {
+      const url = new URL(raw, location.href);
+      if (!['http:', 'https:', 'ws:', 'wss:'].includes(url.protocol)) return false;
+      return url.host !== location.host;
+    } catch {
+      return false;
+    }
+  });
+
+  check(
+    '全程零外部请求',
+    external.length === 0,
+    external.length === 0
+      ? `Resource Timing ${fromTiming.length} 条 + 调用点记录 ${networkAttempts.length} 条，全部同源`
+      : `发现跨源请求：${external.join(', ')}`,
+  );
+}
+
 async function report(): Promise<void> {
   const params = new URLSearchParams(location.search);
   const endpoint = params.get('report');
@@ -395,7 +525,18 @@ async function report(): Promise<void> {
   const log = document.getElementById('log');
   if (log) log.textContent = JSON.stringify(payload, null, 2);
   if (!endpoint) return;
-  await fetch(endpoint, {
+
+  // 只允许把结果送回本机：`?report=` 是 URL 参数，不该成为「打开一个链接就把结果发出去」的通道。
+  let target: URL;
+  try {
+    target = new URL(endpoint, location.href);
+  } catch {
+    return;
+  }
+  const localHosts = new Set(['127.0.0.1', 'localhost', '[::1]']);
+  if (!['http:', 'https:'].includes(target.protocol) || !localHosts.has(target.hostname)) return;
+
+  await fetch(target, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(payload),
@@ -407,4 +548,5 @@ try {
 } catch (err) {
   check('harness 自身', false, err instanceof Error ? `${err.message}\n${err.stack ?? ''}` : String(err));
 }
+checkNoExternalRequests();
 await report();

@@ -22,16 +22,18 @@ const MOUNT = '/__samples__/';
 
 /**
  * 网页版的生产 CSP。桌面版在 `tauri.conf.json` 的 `app.security.csp` 里有一份
- * 同样的策略；改这里时两边要一起改。
+ * 同样的策略；两边不一致时 `apps/web/scripts/check-build.mjs` 会在构建期报红。
  *
  * 为什么需要这些：
  * - `wasm-unsafe-eval`：zxing 与 tesseract 都要编译 wasm
  * - `worker-src/child-src blob:`：pdfjs / tesseract / 渲染 Worker
  * - `frame-src blob:`：网页版打印走隐藏 iframe + blob PDF
  * - `img-src data: blob:`：缩略图与 canvas 导出
- * - `style-src 'unsafe-inline'`：React 的 style 属性
+ * - `style-src 'unsafe-inline'`：只影响样式层，不影响脚本。它是策略里唯一的放宽项，
+ *   保留是为了兼容运行时注入的 `<style>`；还没做「移除后跑一轮」的验证，
+ *   所以先用精确断言把它钉住，而不是假装它不存在。
  */
-const WEB_CSP =
+export const WEB_CSP =
   "default-src 'self'; base-uri 'self'; object-src 'none'; form-action 'none'; " +
   "script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; " +
   "img-src 'self' data: blob:; font-src 'self' data:; " +
@@ -45,7 +47,7 @@ const WEB_CSP =
  * `tauri.conf.json` 自己注入 header/meta。用 `TAURI_ENV_PLATFORM` 区分，
  * 避免两个 CSP meta 叠加后把 Tauri 的 nonce 规则挤掉。
  */
-function cspMeta(): Plugin {
+export function cspMeta(): Plugin {
   return {
     name: 'invoice-tool:csp-meta',
     apply: 'build',
