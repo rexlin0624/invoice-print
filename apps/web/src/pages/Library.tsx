@@ -16,7 +16,7 @@ import { useIntake } from '../state/useIntake';
 import { useLibrary, useLibraryLoad } from '../state/useLibrary';
 import { useLibraryBackup } from '../state/useLibraryBackup';
 import { useStore } from '../state/store';
-import { applyCorrection, buildExportTable, tableToCsv } from '@invoice-tool/core';
+import { applyCorrection, buildExportTable, invoiceTotal, tableToCsv } from '@invoice-tool/core';
 import { useMemo, useState } from 'react';
 
 function dayOf(ms: number): string {
@@ -303,7 +303,7 @@ export function Library() {
                     <td className="ellipsis" title={record.invoice.sellerName ?? ''}>
                       {record.invoice.sellerName ?? '—'}
                     </td>
-                    <td data-num="true">{money(record.invoice.total ?? undefined)}</td>
+                    <td data-num="true">{money(invoiceTotal(record.invoice))}</td>
                     <td>
                       <button
                         type="button"

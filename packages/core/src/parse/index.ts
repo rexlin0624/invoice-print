@@ -287,6 +287,34 @@ export async function parseInvoiceFile(input: ParseInput): Promise<ParseOutcome>
     invoice.issues.push(...crossCheckQr(payload, fromPage));
   };
 
+  /**
+   * 收尾：应用二维码，再定红冲标记。
+   *
+   * 红冲必须等**所有来源合并完**才判：XML/OFD 附件里的金额可能比文字层准，
+   * 先判会把「文字层读到负数」钉死成结论。
+   * 已经由票面字样（`fields.ts` 的「红字/红冲」）或人工校正定过的，不再覆盖。
+   */
+  const settle = (): void => {
+    applyQr();
+    if (invoice.isRed === undefined) {
+      const negative =
+        (invoice.total !== undefined && invoice.total < 0) ||
+        (invoice.amount !== undefined && invoice.amount < 0);
+      if (negative) {
+        invoice.isRed = true;
+        invoice.provenance.isRed = { source: 'derived', confidence: SOURCE_CONFIDENCE.derived };
+        invoice.issues.push(
+          makeIssue(
+            'red-invoice',
+            'info',
+            '识别为红冲（负数）发票：金额为负，将从合计中抵扣，且不参与凑票。',
+            'total',
+          ),
+        );
+      }
+    }
+  };
+
   try {
     switch (format) {
       case 'xml': {
@@ -318,7 +346,7 @@ export async function parseInvoiceFile(input: ParseInput): Promise<ParseOutcome>
           mergeExtraction(invoice, extraction, 'pdf-text');
           const first = result.pages[0]!;
           invoice.pageCount = Math.min(result.pages.length, MAX_INVOICE_PAGES);
-          applyQr();
+          settle();
           return {
             invoice,
             document: buildDocumentText(result.pages),
@@ -389,7 +417,7 @@ export async function parseInvoiceFile(input: ParseInput): Promise<ParseOutcome>
 
         const usable = document.hasText ? document : (fallback ?? document);
         const first = usable.pages[0];
-        applyQr();
+        settle();
         return {
           invoice,
           document: usable,
@@ -412,7 +440,7 @@ export async function parseInvoiceFile(input: ParseInput): Promise<ParseOutcome>
           mergeExtraction(invoice, extractInvoiceFields(fallback.pages), 'ocr');
           invoice.issues.push(makeIssue('ocr-used', 'info', OCR_NOTE));
           const first = fallback.pages[0];
-          applyQr();
+          settle();
           return {
             invoice,
             document: fallback,
@@ -449,6 +477,6 @@ export async function parseInvoiceFile(input: ParseInput): Promise<ParseOutcome>
   }
 
   // 即使文字层挂了，二维码仍可能给出号码/金额/日期
-  applyQr();
+  settle();
   return { invoice };
 }

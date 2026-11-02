@@ -9,6 +9,7 @@
  */
 
 import type { Invoice } from '../model/invoice';
+import { isRedInvoice } from '../model/invoice';
 import type { Cents } from '../model/money';
 
 export type CombineMode =
@@ -43,11 +44,25 @@ export interface CombineResult {
   exact: boolean;
   /** 是否因为节点预算用完而提前收敛（结果可能不是最优，但一定可用） */
   budgetExhausted: boolean;
+  /**
+   * 被排除在凑票之外的红冲（负数）票。
+   *
+   * 凑票只能往「凑够」的方向加，负数票加进去只会让和变小，放进搜索里是有害的。
+   * 但**不能静默丢**：用户选了「从本次导入里凑」，结果少了一张票却没有任何说明，
+   * 会以为是漏了。界面用这个字段提示「已排除 N 张红冲票」。
+   */
+  excludedRed: Invoice[];
 }
 
-/** 只有拿到价税合计的票才能参与凑数 —— 没有金额就没法凑 */
+/**
+ * 只有拿到价税合计、且不是红冲的票才能参与凑数。
+ *
+ * 红冲票（负数）**必须排除**：凑票是「往目标金额上堆」，负数加进去只会让和变小，
+ * 放进搜索里是有害的（还会和剪枝的单调假设打架）。被排除的票由
+ * `CombineResult.excludedRed` 带回去给界面提示，不静默丢。
+ */
 export function combinable(invoices: readonly Invoice[]): Invoice[] {
-  return invoices.filter((inv) => inv.total !== undefined && inv.total > 0);
+  return invoices.filter((inv) => inv.total !== undefined && inv.total > 0 && !isRedInvoice(inv));
 }
 
 /** 金额降序。同等金额时按开票日期，保证结果稳定可复现。 */
@@ -103,6 +118,7 @@ export function chooseInvoices(
   const nodeBudget = Math.max(1, options.nodeBudget ?? 200_000);
 
   const pool = combinable(invoices).sort(byAmountDesc);
+  const excludedRed = invoices.filter((inv) => isRedInvoice(inv));
 
   if (pool.length === 0 || target <= 0) {
     return {
@@ -113,6 +129,7 @@ export function chooseInvoices(
       within: false,
       exact: false,
       budgetExhausted: false,
+      excludedRed,
     };
   }
 
@@ -176,6 +193,7 @@ export function chooseInvoices(
     within: Math.abs(diff) <= tolerance,
     exact: diff === 0,
     budgetExhausted: nodes >= nodeBudget,
+    excludedRed,
   };
 }
 

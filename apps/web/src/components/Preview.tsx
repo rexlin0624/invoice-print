@@ -1,7 +1,7 @@
 import type { LayoutSpec } from '@invoice-tool/core';
 import { useEffect, useState } from 'react';
 
-import { kindLabel, money } from '../lib/format';
+import { displayTotal, kindLabel, money } from '../lib/format';
 import type { IntakeItem } from '../lib/intake';
 import { sourcePage, sourcePages } from '../lib/pages';
 import { imageThumbnailFor, thumbnailFor } from '../lib/thumb';
@@ -142,7 +142,7 @@ function InfoCard({ item }: { item: IntakeItem }) {
       </div>
       <div className="r">
         <b>价税合计</b>
-        <span>{money(inv.total ?? undefined)}</span>
+        <span>{money(displayTotal(inv))}</span>
       </div>
       <div className="r n">{inv.invoiceNo ?? '号码未识别'}</div>
     </div>

@@ -1,5 +1,5 @@
 import type { Invoice, Issue } from '@invoice-tool/core';
-import { correctedFields, isCorrected, worstLevel } from '@invoice-tool/core';
+import { correctedFields, isCorrected, isRedInvoice, worstLevel } from '@invoice-tool/core';
 import { useState } from 'react';
 
 import { displayTotal, kindChipClass, kindLabel, money } from '../lib/format';
@@ -175,6 +175,11 @@ function ItemRow({ item, issues, needless, mark, selected, diagOpen, onToggleDia
           {/* 业务标签与票种同名时不重复显示（如通行费票既是 toll 又带「通行费」业务标签） */}
           {inv.businessTag && inv.businessTag !== kindLabel(inv.kind) && (
             <span className="chip">{inv.businessTag}</span>
+          )}
+          {isRedInvoice(inv) && (
+            <span className="chip chip-red" title="红冲（负数）发票：金额从合计中抵扣，不参与凑票">
+              红冲
+            </span>
           )}
           {isCorrected(inv) && (
             <span className="chip chip-corrected" title={`手工填写了 ${correctedFields(inv).length} 个字段`}>

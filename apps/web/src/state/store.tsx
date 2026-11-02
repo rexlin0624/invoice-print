@@ -10,6 +10,7 @@ import {
   DEFAULT_LAYOUT_SETTINGS,
   applyCorrection,
   findDuplicates,
+  invoiceTotal,
   isAutoDropLevel,
   normalizeLayoutSettings,
   validateInvoice,
@@ -292,7 +293,7 @@ export function reducer(state: AppState, action: Action): AppState {
       const rank = (it: IntakeItem): number | string => {
         const inv = it.invoice;
         if (action.by === 'date') return inv.issueDate ?? '9999-99-99';
-        if (action.by === 'amount') return -(inv.total ?? inv.amount ?? 0);
+        if (action.by === 'amount') return -(invoiceTotal(inv) ?? 0);
         return inv.sellerName ?? 'zzz';
       };
       const items = [...state.items].sort((a, b) => {

@@ -8,10 +8,14 @@
  *                  号码一致但金额/销售方/明细对不上时，同样只标记（可能是伪造同号票）。
  *   3. 疑似级  —— 销售方 + 金额 + 开票日期相同 → **只标记，不自动删**，由用户确认
  *
+ * 另有一层**配对提示**（不属于重复）：一正一负金额相同 → `red-counterpart`。
+ * 这是「原票 + 红冲票」，两张都要报，只提示关系，绝不删任何一张。
+ *
  * 内核不做哈希：sha256 由外壳算好传进来（Web Crypto / Rust 各有一份实现）。
  */
 
 import type { Invoice } from '../model/invoice';
+import { invoiceTotal, isRedInvoice } from '../model/invoice';
 
 export type DuplicateLevel =
   | 'file'
@@ -19,6 +23,13 @@ export type DuplicateLevel =
   /** 代码 + 号码相同，但金额/销售方对不上 —— 只标记，绝不自动删 */
   | 'invoice-no-conflict'
   | 'ocr-invoice-no'
+  /**
+   * 一正一负、金额相同、同销售方同日 —— 看起来是「原票 + 红冲票」。
+   *
+   * 只标记，绝不自动删：这两张**都应该报**（一正一负相抵后才是净额）。
+   * 标记的价值是让用户看到「这是一对」，而不是以为系统漏了一张或金额算错了。
+   */
+  | 'red-counterpart'
   | 'suspected';
 
 /**
@@ -309,13 +320,57 @@ export function findDuplicates(invoices: readonly Invoice[], options: DedupeOpti
     });
   }
 
-  // ---- 3) 疑似级：销售方 + 金额 + 日期 ----
+  // ---- 3) 红冲对应：一正一负、金额相同、同销售方同日 ----
+  // 只标记、绝不自动删：红冲票和原票是**两张都要报**的（相抵后才是净额）。
+  // 这一层放在业务级之后、疑似级之前：业务级已经删掉的票不再参与配对。
+  {
+    const aliveForRed = invoices.filter((i) => !dropped.has(i.id));
+    const byRedKey = new Map<string, { positive: Invoice[]; red: Invoice[] }>();
+    for (const inv of aliveForRed) {
+      const total = invoiceTotal(inv);
+      if (total === undefined || total === 0) continue;
+      if (inv.sellerName === undefined || inv.issueDate === undefined) continue;
+      const key = JSON.stringify([
+        inv.sellerName.replace(/\s+/g, ''),
+        Math.abs(total),
+        inv.issueDate,
+      ]);
+      const bucket = byRedKey.get(key) ?? { positive: [], red: [] };
+      (isRedInvoice(inv) ? bucket.red : bucket.positive).push(inv);
+      byRedKey.set(key, bucket);
+    }
+
+    const alreadyFlagged = new Set(flagged);
+    for (const bucket of byRedKey.values()) {
+      if (bucket.positive.length === 0 || bucket.red.length === 0) continue;
+      const keep = bucket.positive[0]!;
+      const magnitude = Math.abs(invoiceTotal(keep) ?? 0);
+      for (const red of bucket.red) {
+        // 已经因为别的原因被标记过就不再重复报一次
+        if (alreadyFlagged.has(red.id)) continue;
+        alreadyFlagged.add(red.id);
+        flagged.push(red.id);
+        groups.push({
+          level: 'red-counterpart',
+          keep: keep.id,
+          drop: [red.id],
+          reason:
+            `一正一负金额相同（${keep.sellerName ?? '未知销售方'} · ¥${(magnitude / 100).toFixed(2)} · ` +
+            `${keep.issueDate ?? '无日期'}），看起来是一张票和它的红冲票。` +
+            '两张通常都要报（相抵后才是净额），请核对票面确认。',
+        });
+      }
+    }
+  }
+
+  // ---- 4) 疑似级：销售方 + 金额 + 日期 ----
   if (includeSuspected) {
     const aliveNo = invoices.filter((i) => !dropped.has(i.id));
     const byKey = new Map<string, Invoice[]>();
     for (const inv of aliveNo) {
-      if (inv.sellerName === undefined || inv.total === undefined || inv.issueDate === undefined) continue;
-      const key = JSON.stringify([inv.sellerName, inv.total, inv.issueDate]);
+      const total = invoiceTotal(inv);
+      if (inv.sellerName === undefined || total === undefined || inv.issueDate === undefined) continue;
+      const key = JSON.stringify([inv.sellerName, total, inv.issueDate]);
       const list = byKey.get(key);
       if (list) list.push(inv);
       else byKey.set(key, [inv]);
@@ -336,11 +391,12 @@ export function findDuplicates(invoices: readonly Invoice[], options: DedupeOpti
         level: 'suspected',
         keep: keep.id,
         drop: others.map((m) => m.id),
-        reason: `销售方、金额、日期都相同（${keep.sellerName} · ¥${((keep.total ?? 0) / 100).toFixed(2)} · ${keep.issueDate}），但发票号码不同，请确认。`,
+        reason: `销售方、金额、日期都相同（${keep.sellerName} · ¥${((invoiceTotal(keep) ?? 0) / 100).toFixed(2)} · ${keep.issueDate}），但发票号码不同，请确认。`,
       });
     }
   }
 
   const kept = invoices.filter((i) => !dropped.has(i.id)).map((i) => i.id);
-  return { groups, kept, flagged };
+  // 同一个 id 可能同时命中多层（比如 OCR 撞号 + 红冲配对），去重后再交给界面
+  return { groups, kept, flagged: [...new Set(flagged)] };
 }

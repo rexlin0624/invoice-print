@@ -405,6 +405,8 @@ button { font: inherit; color: inherit; }
 .chip-general { background: var(--chip-general); color: var(--chip-general-fg); }
 .chip-special { background: var(--chip-special); color: var(--chip-special-fg); }
 .chip-ticket  { background: var(--chip-ticket);  color: var(--chip-ticket-fg); }
+/* 红冲票：用 danger 色是因为它会把合计往下拉，是「需要留意」的一类票 */
+.chip-red     { background: var(--danger-bg);    color: var(--danger); }
 
 .item-flags { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; }
 .flag {

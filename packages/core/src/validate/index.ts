@@ -100,6 +100,40 @@ export function validateInvoice(inv: Invoice, options: ValidateOptions = {}): Is
   // ---- 购销方是否弄反了 / 是否同一主体 ----
   issues.push(...crossCheckParties(inv));
 
+  // ---- 红冲标记与金额方向必须一致 ----
+  // 两个方向都要查：标了红冲但金额是正数，和标了「不是红冲」但金额是负数，
+  // 都是人工校正与票面矛盾的信号，比静默按其中一个走安全。
+  //
+  // 三个金额字段都要看：`total` 没识别到时，`amount` 仍然可能把矛盾暴露出来
+  // （`invoiceTotal` 会用 `amount + tax` 回退，汇总照样按负数抵扣）。
+  if (inv.isRed === true) {
+    const negative =
+      (inv.total !== undefined && inv.total < 0) || (inv.amount !== undefined && inv.amount < 0);
+    const positive =
+      (inv.total !== undefined && inv.total > 0) || (inv.amount !== undefined && inv.amount > 0);
+    if (positive && !negative) {
+      const shown = inv.total ?? inv.amount;
+      const label = inv.total !== undefined ? '价税合计' : '不含税金额';
+      issues.push(
+        makeIssue(
+          'red-invoice',
+          'warn',
+          `标记为红冲，但${label}是正数（${fmt(shown!)}），请核对票面。`,
+          inv.total !== undefined ? 'total' : 'amount',
+        ),
+      );
+    }
+  }
+  if (inv.isRed === false) {
+    const negative =
+      (inv.total !== undefined && inv.total < 0) || (inv.amount !== undefined && inv.amount < 0);
+    if (negative) {
+      issues.push(
+        makeIssue('red-invoice', 'warn', '已标记为「不是红冲」，但金额是负数，请核对票面。', 'total'),
+      );
+    }
+  }
+
   // ---- 抬头 / 税号与设置不一致（报销风险提示）----
   const wantName = configured(options.companyName);
   const wantTaxId = configured(options.companyTaxId);

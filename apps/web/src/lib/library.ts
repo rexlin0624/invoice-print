@@ -14,6 +14,7 @@
  */
 
 import type { Invoice } from '@invoice-tool/core';
+import { invoiceTotal } from '@invoice-tool/core';
 
 export type LibraryMark = 'printed' | 'reimbursed';
 
@@ -340,7 +341,7 @@ export function statsOf(records: readonly LibraryRecord[]): LibraryStats {
     if (record.mark === 'reimbursed') reimbursed += 1;
     else printed += 1;
     bytes += record.fileSize;
-    if (record.mark === 'reimbursed') total += record.invoice.total ?? 0;
+    if (record.mark === 'reimbursed') total += invoiceTotal(record.invoice) ?? 0;
   }
   return { count: records.length, reimbursed, printed, bytes, total };
 }

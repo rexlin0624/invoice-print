@@ -13,7 +13,7 @@
  */
 
 import type { Invoice, LayoutSpec, Slot } from '@invoice-tool/core';
-import { guardFormula, guardLongDigits, INVOICE_KIND_LABEL } from '@invoice-tool/core';
+import { guardFormula, guardLongDigits, INVOICE_KIND_LABEL, invoiceTotal } from '@invoice-tool/core';
 import type { PDFPage } from 'pdf-lib';
 import {
   PDFDocument,
@@ -391,7 +391,7 @@ export function invoicesToCsv(invoices: readonly Invoice[]): string {
       esc(text(inv.buyerTaxId ?? '')),
       money(inv.amount),
       money(inv.tax),
-      money(inv.total),
+      money(invoiceTotal(inv)),
       esc(text(inv.totalInWords ?? '')),
     ].join(','),
   );

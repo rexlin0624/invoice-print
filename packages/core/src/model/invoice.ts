@@ -100,6 +100,8 @@ export type IssueCode =
   | 'ocr-timeout'
   /** 购销方看起来读串了（两侧同名/同税号） */
   | 'party-suspect'
+  /** 红冲（负数）发票：金额从合计中抵扣，不参与凑票 */
+  | 'red-invoice'
   // 校验相关
   | 'amount-mismatch'
   | 'capital-mismatch'
@@ -167,6 +169,18 @@ export interface Invoice {
   /** 校验码（老票 20 位） */
   checkCode?: string;
 
+  /**
+   * 红冲（负数）发票。
+   *
+   * 三态，和别的字段一致：`undefined` = 没判过（由 `isRedInvoice()` 按金额推断），
+   * `true` = 红冲，`false` = 人工确认为**不是**红冲（覆盖掉推断）。
+   *
+   * 为什么要单独一个字段：金额为负只是「红冲的表现」，不是「红冲这件事」。
+   * 汇总、凑票、查重都要按语义处理（抵扣、排除、与正数票配对），
+   * 三处各写一次 `total < 0` 迟早会漏掉一处。
+   */
+  isRed?: boolean;
+
   items: InvoiceItem[];
 
   /** 文件里的页数（跨页票按一张逻辑票处理） */
@@ -218,6 +232,8 @@ export interface CorrectPatch {
   total?: Cents | null;
   totalInWords?: string | null;
   checkCode?: string | null;
+  /** 人工确认这张是不是红冲票（`null` = 清掉标记，回到按金额推断） */
+  isRed?: boolean | null;
   items?: InvoiceItem[];
   /** 要打印的源文件页下标（0 基）。整套替换 */
   skipPages?: number[];
@@ -238,6 +254,7 @@ const PATCH_FIELDS = [
   'total',
   'totalInWords',
   'checkCode',
+  'isRed',
   'items',
   'skipPages',
 ] as const;
@@ -323,11 +340,63 @@ export function isCorrected(invoice: Pick<Invoice, 'provenance'>): boolean {
  * 唯一口径，内核与两个外壳都从这里取：优先价税合计，其次「不含税 + 税额」。
  * 关键是**不要**在金额缺失时返回 0 —— 那会把「没识别出来」混进「这张票是 0 元」，
  * 汇总时会静默漏账。拿不到就 undefined，由调用方决定怎么显示、怎么计数。
+ *
+ * **红冲一律返回负数**：票面写了「红字/红冲」、但解析到的金额漏了负号时，
+ * 若照着正数返回，就会出现「汇总说抵扣了 5000、合计却多了 5000」这种事。
+ * 原始字段（`invoice.total`）保持解析到的样子，方便对着票面排查；
+ * 该矛盾由 `validate` 给 warn。这里只保证**记账口径**一致。
  */
-export function invoiceTotal(invoice: Pick<Invoice, 'total' | 'amount' | 'tax'>): Cents | undefined {
-  if (invoice.total !== undefined) return invoice.total;
-  if (invoice.amount !== undefined && invoice.tax !== undefined) return invoice.amount + invoice.tax;
-  return undefined;
+export function invoiceTotal(
+  invoice: Pick<Invoice, 'total' | 'amount' | 'tax' | 'isRed'>,
+): Cents | undefined {
+  const raw =
+    invoice.total !== undefined
+      ? invoice.total
+      : invoice.amount !== undefined && invoice.tax !== undefined
+        ? invoice.amount + invoice.tax
+        : undefined;
+  if (raw === undefined) return undefined;
+  return invoice.isRed === true ? -Math.abs(raw) : raw;
+}
+
+/**
+ * 这张票是不是红冲（负数）票。
+ *
+ * 唯一的判定口径，汇总 / 凑票 / 查重 / 导出都从这里取。
+ *
+ * 优先级：显式标记（解析时从票面判断、或人工校正）> 金额符号。
+ * 人工把 `isRed` 设成 `false` 时**必须**尊重它 —— 否则「我确认过这不是红冲」
+ * 会被 `total < 0` 重新推翻，人工校正就白做了。
+ */
+export function isRedInvoice(
+  invoice: Pick<Invoice, 'isRed' | 'total' | 'amount' | 'totalInWords'>,
+): boolean {
+  if (invoice.isRed !== undefined) return invoice.isRed;
+  return amountIsNegative(invoice) || wordsSayNegative(invoice);
+}
+
+/** 金额（价税合计优先，其次不含税）为负 —— 红冲最硬的证据 */
+export function amountIsNegative(
+  invoice: Pick<Invoice, 'total' | 'amount'>,
+): boolean {
+  return (invoice.total !== undefined && invoice.total < 0) || (invoice.amount !== undefined && invoice.amount < 0);
+}
+
+/** 大写金额里带「负」字（部分红冲票只在这里体现方向） */
+export function wordsSayNegative(invoice: Pick<Invoice, 'totalInWords'>): boolean {
+  return invoice.totalInWords !== undefined && /负/.test(invoice.totalInWords);
+}
+
+/**
+ * 红冲票的「抵扣额」（正数，分）。
+ *
+ * 汇总时要说「其中红冲 2 张，-¥1,000.00」，这里的 1000.00 就是这个函数给的。
+ * 拿不到金额时返回 `undefined` —— 和别处一样，不用 0 冒充。
+ */
+export function redMagnitude(invoice: Invoice): Cents | undefined {
+  if (!isRedInvoice(invoice)) return undefined;
+  const total = invoiceTotal(invoice);
+  return total === undefined ? undefined : Math.abs(total);
 }
 
 /**

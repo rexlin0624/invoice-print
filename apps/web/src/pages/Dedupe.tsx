@@ -1,4 +1,4 @@
-import { findDuplicates, isAutoDropLevel } from '@invoice-tool/core';
+import { findDuplicates, invoiceTotal, isAutoDropLevel } from '@invoice-tool/core';
 import { useMemo, useState } from 'react';
 
 import { EmptyState } from '../components/EmptyState';
@@ -38,7 +38,10 @@ export function Dedupe() {
         const keep = chosen[index] ?? group.keep;
         const ordered = [keep, ...members.filter((id) => id !== keep)];
         const drop = ordered.slice(1);
-        const dropTotal = drop.reduce((sum, id) => sum + (byId.get(id)?.invoice.total ?? 0), 0);
+        const dropTotal = drop.reduce(
+          (sum, id) => sum + (byId.get(id) ? (invoiceTotal(byId.get(id)!.invoice) ?? 0) : 0),
+          0,
+        );
         return { index, level: group.level, reason: group.reason, ordered, drop, dropTotal };
       }),
     [result.groups, chosen, byId],
@@ -47,19 +50,23 @@ export function Dedupe() {
   const certain = groups.filter((g) => isAutoDropLevel(g.level));
   const ocrCollisions = groups.filter((g) => g.level === 'ocr-invoice-no');
   const conflicts = groups.filter((g) => g.level === 'invoice-no-conflict');
+  const redPairs = groups.filter((g) => g.level === 'red-counterpart');
   const suspected = groups.filter((g) => g.level === 'suspected');
 
   const skippedCount = skipped.size;
   const skippedTotal = useMemo(
     () =>
-      items.reduce((sum, it) => (skipped.has(it.id) ? sum + (it.invoice.total ?? 0) : sum), 0),
+      items.reduce(
+        (sum, it) => (skipped.has(it.id) ? sum + (invoiceTotal(it.invoice) ?? 0) : sum),
+        0,
+      ),
     [items, skipped],
   );
   const total = useMemo(
-    () => items.reduce((sum, it) => sum + (it.invoice.total ?? 0), 0),
+    () => items.reduce((sum, it) => sum + (invoiceTotal(it.invoice) ?? 0), 0),
     [items],
   );
-  const uncertainCount = ocrCollisions.length + conflicts.length + suspected.length;
+  const uncertainCount = ocrCollisions.length + conflicts.length + redPairs.length + suspected.length;
 
   const applyGroup = (ids: string[], keepId: string): void => {
     dispatch({ type: 'skip/many', ids: ids.filter((id) => id !== keepId), skip: true });
@@ -92,7 +99,7 @@ export function Dedupe() {
           <h1>查重</h1>
           <p className="page-sub">
             三层判定：文件相同 → 发票代码 + 号码相同 → 疑似（同号但字段冲突 / OCR 撞号 / 销售方 + 金额 + 日期相同）。
-            只有前两层且字段一致时才会默认跳过，其余只提示。
+            只有前两层且字段一致时才会默认跳过，其余只提示。另外会把「一正一负金额相同」的票标成红冲配对，两张都不跳过。
           </p>
         </div>
         <span className="spacer" />
@@ -177,7 +184,7 @@ export function Dedupe() {
                         </label>
                         <span className="dupe-meta">
                           {item.invoice.sellerName ?? '未识别销售方'} ·{' '}
-                          {money(item.invoice.total ?? undefined)} · {item.invoice.issueDate ?? '无日期'}
+                          {money(invoiceTotal(item.invoice))} · {item.invoice.issueDate ?? '无日期'}
                         </span>
                         <span className="spacer" />
                         <span className={isSkipped ? 'chip' : 'chip chip-special'}>
@@ -262,13 +269,53 @@ export function Dedupe() {
                         </label>
                         <span className="dupe-meta">
                           {item.invoice.invoiceCode ? `${item.invoice.invoiceCode} / ` : ''}
-                          {item.invoice.invoiceNo ?? '无号码'} · {money(item.invoice.total ?? undefined)} ·{' '}
+                          {item.invoice.invoiceNo ?? '无号码'} · {money(invoiceTotal(item.invoice))} ·{' '}
                           {item.invoice.issueDate ?? '无日期'} · {item.invoice.sellerName ?? '未识别销售方'}
                         </span>
                         <span className="spacer" />
                         <span className={skipped.has(id) ? 'chip' : 'chip chip-special'}>
                           {skipped.has(id) ? '打印时跳过' : '会打印'}
                         </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            ))}
+          </section>
+        )}
+
+        {redPairs.length > 0 && (
+          <section className="card">
+            <h2>
+              红冲配对
+              <span className="count">{redPairs.length} 组</span>
+            </h2>
+            <p className="muted">
+              一正一负、金额相同、同销售方同日 —— 看起来是一张票和它的红冲票。
+              <b>两张通常都要报</b>（相抵后才是净额），这里只提示关系，不会跳过任何一张。
+            </p>
+            {redPairs.map((group) => (
+              <div className="dupe" key={group.index}>
+                <div className="dupe-head">
+                  <span className="chip chip-red">红冲配对</span>
+                  <span className="spacer" />
+                  <span className="muted">{group.reason}</span>
+                </div>
+                <ul className="dupe-list">
+                  {group.ordered.map((id) => {
+                    const item = byId.get(id);
+                    if (!item) return null;
+                    return (
+                      <li key={id}>
+                        <span className="dupe-name">{item.invoice.fileName}</span>
+                        <span className="dupe-meta">
+                          {money(invoiceTotal(item.invoice))} ·{' '}
+                          {item.invoice.issueDate ?? '无日期'} ·{' '}
+                          {item.invoice.sellerName ?? '未识别销售方'}
+                        </span>
+                        <span className="spacer" />
+                        <span className="chip chip-special">会打印</span>
                       </li>
                     );
                   })}
@@ -324,7 +371,7 @@ export function Dedupe() {
                         </label>
                         <span className="dupe-meta">
                           {item.invoice.invoiceCode ? `${item.invoice.invoiceCode} / ` : ''}
-                          {item.invoice.invoiceNo ?? '无号码'} · {money(item.invoice.total ?? undefined)} ·{' '}
+                          {item.invoice.invoiceNo ?? '无号码'} · {money(invoiceTotal(item.invoice))} ·{' '}
                           {item.invoice.issueDate ?? '无日期'}
                         </span>
                         <span className="spacer" />
@@ -379,7 +426,7 @@ export function Dedupe() {
                           <span className="dupe-name">{item.invoice.fileName}</span>
                         </label>
                         <span className="dupe-meta">
-                          {item.invoice.invoiceNo ?? '无号码'} · {money(item.invoice.total ?? undefined)} ·{' '}
+                          {item.invoice.invoiceNo ?? '无号码'} · {money(invoiceTotal(item.invoice))} ·{' '}
                           {item.invoice.issueDate ?? '无日期'}
                         </span>
                         <span className="spacer" />

@@ -400,6 +400,18 @@ export function extractInvoiceFields(pages: readonly PageText[]): InvoiceExtract
     if (v !== '') anchors.drawer = `${drawerHit.token.text}${v}`;
   }
 
+  // ---- 红冲 / 作废（票面写着「红字」「红冲」的情况）----
+  // 只认票面明说的这一类：金额为负的那一条留到 `parse/index.ts` 合并完之后统一判，
+  // 因为 XML/OFD 附件里的金额可能比文字层更准，先判会把结论钉死。
+  if (/红字|红冲/.test(squash(fullText))) {
+    fields.isRed = true;
+    confidence.isRed = CONF.medium;
+    anchors.isRed = '票面「红字/红冲」字样';
+    issues.push(
+      makeIssue('red-invoice', 'info', '票面标注「红字/红冲」，按红冲（负数）发票处理。', 'total'),
+    );
+  }
+
   return { fields, confidence, anchors, issues };
 }
 

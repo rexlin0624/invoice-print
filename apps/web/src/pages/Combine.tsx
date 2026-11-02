@@ -1,5 +1,5 @@
 import type { Invoice } from '@invoice-tool/core';
-import { chooseInvoices, groupTotals } from '@invoice-tool/core';
+import { chooseInvoices, groupTotals, invoiceTotal } from '@invoice-tool/core';
 import { useMemo, useState } from 'react';
 
 import { money } from '../lib/format';
@@ -54,7 +54,7 @@ export function Combine() {
     [result, excluded],
   );
 
-  const sum = picked.reduce((acc, inv) => acc + (inv.total ?? 0), 0);
+  const sum = picked.reduce((acc, inv) => acc + (invoiceTotal(inv) ?? 0), 0);
   const diff = target === undefined ? 0 : sum - target;
   const bySeller = useMemo(() => groupTotals(picked, 'seller').slice(0, 4), [picked]);
 
@@ -163,6 +163,12 @@ export function Combine() {
               </span>
             </h2>
 
+            {result.excludedRed.length > 0 && (
+              <p className="muted">
+                已排除 {result.excludedRed.length} 张红冲票：负数金额不参与凑数，否则只会把合计拉小。
+              </p>
+            )}
+
             {picked.length === 0 ? (
               <p className="muted">
                 {pool.length === 0
@@ -183,7 +189,7 @@ export function Combine() {
                       <span className="pick-name">{inv.sellerName ?? inv.fileName}</span>
                       <span className="muted">{inv.issueDate ?? '无日期'}</span>
                       <span className="spacer" />
-                      <b>{money(inv.total ?? undefined)}</b>
+                      <b>{money(invoiceTotal(inv))}</b>
                     </li>
                   ))}
                 </ul>

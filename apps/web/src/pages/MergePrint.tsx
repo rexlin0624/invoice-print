@@ -376,6 +376,11 @@ export function MergePrint() {
             <span>
               本次打印 {summary.count} 张 · 合计 <b>{money(summary.amountTotal)}</b>
               {summary.missingAmount > 0 && <span className="muted">（{summary.missingAmount} 张没金额）</span>}
+              {summary.redCount > 0 && (
+                <span className="muted">
+                  （含红冲 {summary.redCount} 张 -{money(summary.redTotal)}，已抵扣）
+                </span>
+              )}
             </span>
             <span className="sep">|</span>
             <span>

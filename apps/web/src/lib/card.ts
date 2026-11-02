@@ -7,7 +7,7 @@
  */
 
 import type { Invoice } from '@invoice-tool/core';
-import { INVOICE_KIND_LABEL } from '@invoice-tool/core';
+import { INVOICE_KIND_LABEL, invoiceTotal, isRedInvoice } from '@invoice-tool/core';
 
 import { money } from './format';
 
@@ -44,8 +44,9 @@ export async function renderInvoiceCard(
   ctx.lineWidth = Math.max(1, px(1.4));
   ctx.strokeRect(ctx.lineWidth / 2, ctx.lineWidth / 2, w - ctx.lineWidth, h - ctx.lineWidth);
 
-  // 顶部：票种 + 特定业务
-  const tag = INVOICE_KIND_LABEL[inv.kind] + (inv.businessTag ? ` · ${inv.businessTag}` : '');
+  // 顶部：票种 + 特定业务（红冲要写在卡片上，否则打印出来的纸和正常票长得一样）
+  const red = isRedInvoice(inv) ? ' · 红冲' : '';
+  const tag = INVOICE_KIND_LABEL[inv.kind] + (inv.businessTag ? ` · ${inv.businessTag}` : '') + red;
   ctx.fillStyle = '#1d4ed8';
   ctx.fillRect(px(18), px(16), px(4), px(22));
   ctx.fillStyle = '#111827';
@@ -64,7 +65,7 @@ export async function renderInvoiceCard(
   right(`发票号码 ${inv.invoiceNo ?? '未识别'}`, px(28));
 
   // 中部大金额
-  const total = inv.total;
+  const total = invoiceTotal(inv);
   ctx.fillStyle = '#111827';
   ctx.font = `700 ${px(30)}px -apple-system, "PingFang SC", sans-serif`;
   ctx.fillText(total === undefined ? '价税合计 未识别' : `价税合计 ${money(total)}`, px(18), px(76));

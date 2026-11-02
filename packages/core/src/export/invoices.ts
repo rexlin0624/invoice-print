@@ -12,7 +12,7 @@
  */
 
 import type { Invoice } from '../model/invoice';
-import { INVOICE_KIND_LABEL } from '../model/invoice';
+import { INVOICE_KIND_LABEL, invoiceTotal, isRedInvoice } from '../model/invoice';
 
 export type ExportField =
   | 'fileName'
@@ -30,6 +30,7 @@ export type ExportField =
   | 'tax'
   | 'total'
   | 'totalInWords'
+  | 'isRed'
   | 'mark'
   | 'importedAt';
 
@@ -61,6 +62,7 @@ export const EXPORT_COLUMNS: readonly ExportColumn[] = [
   { field: 'buyerTaxId', label: '购买方税号', kind: 'text', width: 22, on: false },
   { field: 'businessTag', label: '特定业务', kind: 'text', width: 14, on: false },
   { field: 'totalInWords', label: '价税合计(大写)', kind: 'text', width: 26, on: false },
+  { field: 'isRed', label: '红冲', kind: 'text', width: 8, on: false },
   { field: 'mark', label: '状态', kind: 'text', width: 10, on: false },
   { field: 'fileName', label: '文件名', kind: 'text', width: 34, on: false },
   { field: 'importedAt', label: '导入时间', kind: 'datetime', width: 18, on: false },
@@ -97,6 +99,11 @@ export function centsToYuan(cents: number): number {
   return Math.round(cents) / 100;
 }
 
+/** 红冲票的金额统一按负数导出，和 `invoiceTotal` 的口径一致 */
+function signedAmount(inv: Invoice, value: number): number {
+  return isRedInvoice(inv) ? -Math.abs(value) : value;
+}
+
 function cellFor(inv: Invoice, field: ExportField, marks: Readonly<Record<string, MarkValue>>): string | number | undefined {
   switch (field) {
     case 'fileName':
@@ -122,13 +129,18 @@ function cellFor(inv: Invoice, field: ExportField, marks: Readonly<Record<string
     case 'buyerTaxId':
       return inv.buyerTaxId;
     case 'amount':
-      return inv.amount === undefined ? undefined : centsToYuan(inv.amount);
+      return inv.amount === undefined ? undefined : centsToYuan(signedAmount(inv, inv.amount));
     case 'tax':
-      return inv.tax === undefined ? undefined : centsToYuan(inv.tax);
-    case 'total':
-      return inv.total === undefined ? undefined : centsToYuan(inv.total);
+      return inv.tax === undefined ? undefined : centsToYuan(signedAmount(inv, inv.tax));
+    case 'total': {
+      // 走 `invoiceTotal`（唯一记账口径）：红冲一律是负数，哪怕票面漏了负号
+      const total = invoiceTotal(inv);
+      return total === undefined ? undefined : centsToYuan(total);
+    }
     case 'totalInWords':
       return inv.totalInWords;
+    case 'isRed':
+      return isRedInvoice(inv) ? '红冲' : undefined;
     case 'mark': {
       const mark = marks[inv.id];
       return mark === undefined ? undefined : MARK_LABEL[mark];

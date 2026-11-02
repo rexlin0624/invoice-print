@@ -15,7 +15,7 @@
 import type { Cents } from '../model/money';
 import { formatCents } from '../model/money';
 import type { Invoice, InvoiceKind } from '../model/invoice';
-import { INVOICE_KIND_LABEL, invoiceTotal } from '../model/invoice';
+import { INVOICE_KIND_LABEL, invoiceTotal, isRedInvoice, redMagnitude } from '../model/invoice';
 
 export interface KindBucket {
   kind: InvoiceKind;
@@ -32,6 +32,15 @@ export interface BatchSummary {
   recognized: number;
   missingNo: number;
   missingAmount: number;
+  /**
+   * 红冲（负数）票的张数。
+   *
+   * 必须单列：合计是**净额**（正负相抵），如果只给净额，用户看到「2 张、合计 0 元」
+   * 会以为解析错了 —— 实际是一张 5000 的票和它的 5000 红冲票。
+   */
+  redCount: number;
+  /** 红冲票的抵扣额（**正数**，分）。展示时写作 `-¥xxx` */
+  redTotal: Cents;
   /** 金额合计（分，只统计拿得到金额的票） */
   amountTotal: Cents;
   /** 税额合计（分，只统计拿得到税额的票） */
@@ -54,14 +63,25 @@ export function summarizeBatch(invoices: readonly Invoice[]): BatchSummary {
   let missingAmount = 0;
   let amountTotal = 0;
   let taxTotal = 0;
+  let redCount = 0;
+  let redTotal = 0;
   let dateFrom: string | undefined;
   let dateTo: string | undefined;
 
   for (const inv of invoices) {
+    // `invoiceTotal` 已经把红冲统一成负数（哪怕票面漏了负号），这里直接加。
     const total = invoiceTotal(inv);
+    const red = isRedInvoice(inv);
+
     if (total === undefined) missingAmount += 1;
     else amountTotal += total;
-    if (inv.tax !== undefined) taxTotal += inv.tax;
+    if (inv.tax !== undefined) taxTotal += red ? -Math.abs(inv.tax) : inv.tax;
+
+    if (red) {
+      redCount += 1;
+      const magnitude = redMagnitude(inv);
+      if (magnitude !== undefined) redTotal += magnitude;
+    }
 
     if (inv.invoiceNo) recognized += 1;
     else missingNo += 1;
@@ -91,6 +111,8 @@ export function summarizeBatch(invoices: readonly Invoice[]): BatchSummary {
     missingAmount,
     amountTotal,
     taxTotal,
+    redCount,
+    redTotal,
     byKind: [...buckets.values()].sort((a, b) => b.count - a.count),
     sellers: sellers.size,
     ...(dateFrom !== undefined ? { dateFrom } : {}),
@@ -120,6 +142,13 @@ export function summaryText(summary: BatchSummary, options: { title?: string } =
 
   lines.push(`已识别发票号码：${summary.recognized} 张`);
   lines.push(`金额合计：${formatCents(summary.amountTotal)} 元`);
+  if (summary.redCount > 0) {
+    const known =
+      summary.redTotal > 0 ? `-${formatCents(summary.redTotal)} 元` : '金额未识别';
+    lines.push(
+      `其中红冲 ${summary.redCount} 张：${known}（已从合计中抵扣，且不参与凑票）`,
+    );
+  }
   if (summary.missingAmount > 0) lines.push(`（另有 ${summary.missingAmount} 张没识别到金额，未计入）`);
   if (summary.taxTotal > 0) lines.push(`其中税额：${formatCents(summary.taxTotal)} 元`);
   if (summary.dateFrom && summary.dateTo) {
