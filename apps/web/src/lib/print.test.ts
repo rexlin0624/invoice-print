@@ -70,4 +70,22 @@ describe('invoicesToCsv — 公式注入', () => {
     expect(csv).toContain('"100.00"');
     expect(csv).toContain('"113.00"');
   });
+
+  it('标了红冲但小写漏了负号：三个金额列一起变负，与 xlsx 导出同口径', () => {
+    // 这张票 `signedAmount` / `invoiceTotal` 都会取负；如果只给「价税合计」取负，
+    // 两条导出就会给出相反的不含税金额与税额符号，核对两张表的人会以为算错了。
+    const csv = invoicesToCsv([
+      invoice({ isRed: true, amount: 500000, tax: 30000, total: 530000 }),
+    ]);
+    expect(csv).toContain('"-5000.00"');
+    expect(csv).toContain('"-300.00"');
+    expect(csv).toContain('"-5300.00"');
+  });
+
+  it('正常票的三个金额列保持正数', () => {
+    const csv = invoicesToCsv([invoice({ amount: 500000, tax: 30000, total: 530000 })]);
+    expect(csv).toContain('"5000.00"');
+    expect(csv).toContain('"300.00"');
+    expect(csv).toContain('"5300.00"');
+  });
 });

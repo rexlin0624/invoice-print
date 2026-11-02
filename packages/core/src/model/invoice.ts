@@ -347,7 +347,7 @@ export function isCorrected(invoice: Pick<Invoice, 'provenance'>): boolean {
  * 该矛盾由 `validate` 给 warn。这里只保证**记账口径**一致。
  */
 export function invoiceTotal(
-  invoice: Pick<Invoice, 'total' | 'amount' | 'tax' | 'isRed'>,
+  invoice: Pick<Invoice, 'total' | 'amount' | 'tax' | 'isRed' | 'totalInWords'>,
 ): Cents | undefined {
   const raw =
     invoice.total !== undefined
@@ -356,7 +356,12 @@ export function invoiceTotal(
         ? invoice.amount + invoice.tax
         : undefined;
   if (raw === undefined) return undefined;
-  return invoice.isRed === true ? -Math.abs(raw) : raw;
+  // 方向也走 `isRedInvoice()`，不在这里另判 `isRed === true`。
+  // 否则「票面写了红字、数字金额漏了负号」这类票会出现内部打架：`settle()` 给了
+  // `isRed = true`、`redCount` 记了 1 张，合计却把 5000 加了进去。
+  // 而人工构造 / 旧数据里还可能只有大写带「负」、`isRed` 仍是 `undefined`，
+  // 那时同样只能靠 `isRedInvoice()` 兜住。
+  return isRedInvoice(invoice) ? -Math.abs(raw) : raw;
 }
 
 /**

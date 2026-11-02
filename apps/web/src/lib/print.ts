@@ -13,7 +13,13 @@
  */
 
 import type { Invoice, LayoutSpec, Slot } from '@invoice-tool/core';
-import { guardFormula, guardLongDigits, INVOICE_KIND_LABEL, invoiceTotal } from '@invoice-tool/core';
+import {
+  guardFormula,
+  guardLongDigits,
+  INVOICE_KIND_LABEL,
+  invoiceTotal,
+  signedAmount,
+} from '@invoice-tool/core';
 import type { PDFPage } from 'pdf-lib';
 import {
   PDFDocument,
@@ -378,6 +384,9 @@ export function invoicesToCsv(invoices: readonly Invoice[]): string {
    */
   const money = (cents: number | undefined): string => esc(yuan(cents));
 
+  // 不含税金额与税额也要按红冲方向取负：`xlsx` 那条导出（`buildExportTable`）走的是
+  // 同一个 `signedAmount`。这里若原样取 `inv.amount`，同一张「小写漏了负号」的红冲票，
+  // 两条导出会给出相反的不含税金额与税额符号 —— 对着两张表核账的人会以为哪边算错了。
   const rows = invoices.map((inv) =>
     [
       esc(text(inv.fileName)),
@@ -389,8 +398,8 @@ export function invoicesToCsv(invoices: readonly Invoice[]): string {
       esc(text(inv.sellerTaxId ?? '')),
       esc(text(inv.buyerName ?? '')),
       esc(text(inv.buyerTaxId ?? '')),
-      money(inv.amount),
-      money(inv.tax),
+      money(inv.amount === undefined ? undefined : signedAmount(inv, inv.amount)),
+      money(inv.tax === undefined ? undefined : signedAmount(inv, inv.tax)),
       money(invoiceTotal(inv)),
       esc(text(inv.totalInWords ?? '')),
     ].join(','),

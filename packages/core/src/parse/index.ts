@@ -10,7 +10,13 @@
 import JSZip from 'jszip';
 
 import type { Invoice, Issue } from '../model/invoice';
-import { MAX_INVOICE_PAGES, makeIssue, SOURCE_CONFIDENCE } from '../model/invoice';
+import {
+  amountIsNegative,
+  MAX_INVOICE_PAGES,
+  makeIssue,
+  SOURCE_CONFIDENCE,
+  wordsSayNegative,
+} from '../model/invoice';
 import type { ArchiveLimits } from './limits';
 import {
   ArchiveLimitError,
@@ -293,26 +299,33 @@ export async function parseInvoiceFile(input: ParseInput): Promise<ParseOutcome>
    * 红冲必须等**所有来源合并完**才判：XML/OFD 附件里的金额可能比文字层准，
    * 先判会把「文字层读到负数」钉死成结论。
    * 已经由票面字样（`fields.ts` 的「红字/红冲」）或人工校正定过的，不再覆盖。
+   *
+   * 两类证据都要认：
+   * - **金额为负** —— 最硬；
+   * - **大写金额带「负」** —— 部分红冲票数字金额漏了负号，只有大写写了方向。
+   *   以前只判前者，于是这种票 `isRed` 空着、数字按正数入账，而 `isRedInvoice()`
+   *   又因为大写认它是红冲 —— 汇总里就会「说抵扣了 5000，合计却加了 5000」。
    */
   const settle = (): void => {
     applyQr();
-    if (invoice.isRed === undefined) {
-      const negative =
-        (invoice.total !== undefined && invoice.total < 0) ||
-        (invoice.amount !== undefined && invoice.amount < 0);
-      if (negative) {
-        invoice.isRed = true;
-        invoice.provenance.isRed = { source: 'derived', confidence: SOURCE_CONFIDENCE.derived };
-        invoice.issues.push(
-          makeIssue(
-            'red-invoice',
-            'info',
-            '识别为红冲（负数）发票：金额为负，将从合计中抵扣，且不参与凑票。',
-            'total',
-          ),
-        );
-      }
-    }
+    if (invoice.isRed !== undefined) return;
+
+    const byAmount = amountIsNegative(invoice);
+    const byWords = !byAmount && wordsSayNegative(invoice);
+    if (!byAmount && !byWords) return;
+
+    invoice.isRed = true;
+    invoice.provenance.isRed = { source: 'derived', confidence: SOURCE_CONFIDENCE.derived };
+    invoice.issues.push(
+      makeIssue(
+        'red-invoice',
+        'info',
+        byAmount
+          ? '识别为红冲（负数）发票：金额为负，将从合计中抵扣，且不参与凑票。'
+          : '识别为红冲（负数）发票：大写金额里带「负」，数字金额漏了负号，记账按负数处理。',
+        byAmount ? 'total' : 'totalInWords',
+      ),
+    );
   };
 
   try {

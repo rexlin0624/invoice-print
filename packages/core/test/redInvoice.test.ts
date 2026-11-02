@@ -79,6 +79,74 @@ describe('isRedInvoice —— 唯一判定口径', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// 方向只写在文字里（大写带「负」、小写漏了负号）
+//
+// 这一组是「唯一口径」这条设计的反面检验：只要有一处（invoiceTotal / settle /
+// validate）自己另判 `isRed === true`，就会出现「汇总说红冲 1 张抵扣了 5000，
+// 合计却 +5000」的自相矛盾。所以四个出口都要钉住。
+// ---------------------------------------------------------------------------
+
+describe('方向只在大写金额里（小写漏负号）', () => {
+  /** 5000 元，大写写了「负」，数字金额是正的，没人标过 isRed */
+  const wordsOnly = (over: Partial<Invoice> = {}) =>
+    inv({ total: 500000, totalInWords: '负伍仟圆整', ...over });
+
+  it('invoiceTotal 按负数记账（不再只认 isRed === true）', () => {
+    expect(invoiceTotal(wordsOnly())).toBe(-500000);
+  });
+
+  it('人工确认「不是红冲」时，大写里的「负」不能翻回来', () => {
+    expect(invoiceTotal(wordsOnly({ isRed: false }))).toBe(500000);
+  });
+
+  it('汇总自洽：合计是 -5000，且红冲计数与抵扣额对得上', () => {
+    const s = summarizeBatch([wordsOnly()]);
+    expect(s.amountTotal).toBe(-500000);
+    expect(s.redCount).toBe(1);
+    expect(s.redTotal).toBe(500000);
+    expect(summaryText(s)).toContain('-¥5,000.00');
+  });
+
+  it('校验给出 warn，并指到大写金额那一格', () => {
+    const issues = validateInvoice(wordsOnly());
+    const hit = issues.find((i) => i.code === 'red-invoice' && i.level === 'warn');
+    expect(hit).toBeDefined();
+    expect(hit?.field).toBe('totalInWords');
+  });
+
+  it('解析路径：settle() 把「大写带负」也推成 isRed，且说明里写清依据', async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<Invoice xmlns="http://www.chinatax.gov.cn/einv">
+  <Main>
+    <InvoiceNumber>12345678901234567891</InvoiceNumber>
+    <IssueDate>2026-06-19</IssueDate>
+    <SellerName>某某测试乙有限公司</SellerName>
+    <SellerTaxId>9144000000000011MN</SellerTaxId>
+    <AmountWithoutTax>4716.98</AmountWithoutTax>
+    <TotalTax>283.02</TotalTax>
+    <TotalAmountWithTax>5000.00</TotalAmountWithTax>
+    <TotalAmountInWords>负伍仟圆整</TotalAmountInWords>
+  </Main>
+</Invoice>`;
+
+    const outcome = await parseInvoiceFile({
+      id: 'words1',
+      fileName: 'words.xml',
+      data: new TextEncoder().encode(xml),
+      sha256: 'words1',
+    });
+    const parsed = outcome.invoice;
+    expect(parsed.total).toBe(500000); // 原始字段保持票面样子，方便对票排查
+    expect(parsed.isRed).toBe(true);
+    expect(parsed.provenance.isRed?.source).toBe('derived');
+    expect(invoiceTotal(parsed)).toBe(-500000);
+    const issue = parsed.issues.find((i) => i.code === 'red-invoice');
+    expect(issue?.field).toBe('totalInWords');
+    expect(issue?.message).toContain('大写金额');
+  });
+});
+
 describe('redMagnitude —— 抵扣额是正数', () => {
   it('取绝对值', () => {
     expect(redMagnitude(redInvoice())).toBe(500000);

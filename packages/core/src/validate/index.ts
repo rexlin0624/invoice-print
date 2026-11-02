@@ -6,7 +6,7 @@
  */
 
 import type { Invoice, Issue } from '../model/invoice';
-import { makeIssue } from '../model/invoice';
+import { makeIssue, wordsSayNegative } from '../model/invoice';
 import { capitalToCents } from '../model/money';
 import { checkTaxId } from './uscc';
 
@@ -130,6 +130,26 @@ export function validateInvoice(inv: Invoice, options: ValidateOptions = {}): Is
     if (negative) {
       issues.push(
         makeIssue('red-invoice', 'warn', '已标记为「不是红冲」，但金额是负数，请核对票面。', 'total'),
+      );
+    }
+  }
+  // 未标注、但**大写金额带「负」而数字金额是正数**：这类票的方向只在文字里，
+  // 记账已经按负数处理（`isRedInvoice()` 认大写），必须让用户看见这个判断，
+  // 否则「合计里少了一笔」会无声发生。解析路径上 `settle()` 会直接把它推成红冲，
+  // 这条主要兜住人工构造与旧数据；`capital-mismatch` 只比大小、比不出方向。
+  if (inv.isRed === undefined && wordsSayNegative(inv)) {
+    const positive =
+      (inv.total !== undefined && inv.total > 0) || (inv.amount !== undefined && inv.amount > 0);
+    if (positive) {
+      const shown = (inv.total ?? inv.amount)!;
+      const label = inv.total !== undefined ? '价税合计' : '不含税金额';
+      issues.push(
+        makeIssue(
+          'red-invoice',
+          'warn',
+          `大写金额里带「负」，但${label}是正数（${fmt(shown)}），已按红冲（负数）记账，请核对票面。`,
+          'totalInWords',
+        ),
       );
     }
   }

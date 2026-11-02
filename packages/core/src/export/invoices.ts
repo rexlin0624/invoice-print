@@ -99,8 +99,14 @@ export function centsToYuan(cents: number): number {
   return Math.round(cents) / 100;
 }
 
-/** 红冲票的金额统一按负数导出，和 `invoiceTotal` 的口径一致 */
-function signedAmount(inv: Invoice, value: number): number {
+/**
+ * 红冲票的金额统一按负数导出，和 `invoiceTotal` 的口径一致。
+ *
+ * **导出必须走这里**：网页版还另有一条 CSV 导出（`apps/web/src/lib/print.ts`），
+ * 它直接取 `inv.amount` / `inv.tax`；同一张「小写漏了负号」的票，两条导出会给出
+ * 不同的不含税金额与税额符号。所以要导出，不要各写一份。
+ */
+export function signedAmount(inv: Invoice, value: number): number {
   return isRedInvoice(inv) ? -Math.abs(value) : value;
 }
 
