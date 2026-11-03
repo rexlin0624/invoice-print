@@ -36,6 +36,8 @@ import {
 } from 'pdf-lib';
 
 import { renderInvoiceCard } from './card';
+import type { PrintFallback } from './fallback';
+import { fallbackReasonOf } from './fallback';
 import type { IntakeItem } from './intake';
 import { sourcePage } from './pages';
 import { rasterizeImage, rasterizePage } from './raster';
@@ -57,6 +59,8 @@ export interface ComposeOptions {
 export interface ComposedPdf {
   bytes: Uint8Array;
   pageCount: number;
+  /** 没能印成票面原样、退化成信息卡的票（**不能静默**：UI 必须告诉用户） */
+  fallbacks: PrintFallback[];
 }
 
 type Card = { png: Uint8Array; widthPt: number; heightPt: number };
@@ -205,6 +209,9 @@ export async function composePrintPdf(
   out.setProducer('发票工具');
   out.setCreator('发票工具');
 
+  /** 按 id 去重：一张多页票的每个槽位都会走到这里，只记一次 */
+  const fallbackById = new Map<string, PrintFallback>();
+
   const byId = new Map(items.map((it) => [it.id, it]));
   const font = await out.embedFont(StandardFonts.Helvetica);
 
@@ -242,6 +249,15 @@ export async function composePrintPdf(
       }
 
       if (!drawn) {
+        // 走信息卡。这是**降级**，不是正常路径 —— 必须记下来给 UI 复述一遍。
+        // 早先这里静默画卡：用户拿到的纸上是一张只有号码/金额的小卡片，
+        // 直到贴票时才发现「这不是发票」。
+        const reason = fallbackReasonOf(item) ?? 'embed-failed';
+        fallbackById.set(item.id, {
+          id: item.id,
+          fileName: item.invoice.fileName,
+          reason,
+        });
         const card = await cardFor(item, slot);
         const png = await out.embedPng(card.png);
         page.drawImage(png, {
@@ -277,8 +293,16 @@ export async function composePrintPdf(
     }
   }
 
+  const fallbacks = [...fallbackById.values()];
+  if (fallbacks.length > 0) {
+    logLine(
+      `print fallback ${fallbacks.length}/${items.length}: ` +
+        fallbacks.map((f) => `${f.fileName}(${f.reason})`).join(' | '),
+    );
+  }
+
   const bytes = await out.save();
-  return { bytes, pageCount: spec.pageCount };
+  return { bytes, pageCount: spec.pageCount, fallbacks };
 }
 
 /**

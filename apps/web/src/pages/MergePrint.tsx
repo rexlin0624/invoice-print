@@ -16,6 +16,8 @@ import { PageViewer, viewerSourceOf } from '../components/PageViewer';
 import { Preview } from '../components/Preview';
 import { PrinterIcon } from '../components/icons';
 import type { Box } from '../lib/box';
+import { FALLBACK_HINT } from '../lib/fallback';
+import { previewFallbacks } from '../lib/fallback';
 import type { IntakeItem } from '../lib/intake';
 import { alreadyHandled, updateInvoiceFields } from '../lib/library';
 import { anyCropped, layoutItems } from '../lib/pages';
@@ -148,6 +150,17 @@ export function MergePrint() {
     return ' · 无白边可裁';
   }, [state.settings.cropWhitespace, printItems]);
 
+  /**
+   * 印不成票面原样、会退化成信息卡的票（OFD / XML / 解析失败）。
+   *
+   * 这些票**必须在出纸之前**说清楚：早先它们被静默画成信息卡，用户贴报销单时
+   * 才发现拿到手的不是发票。横幅常驻 + 打印前再确认一次。
+   */
+  const fallbacks = useMemo(() => previewFallbacks(printItems), [printItems]);
+  const fallbackKey = fallbacks.map((f) => f.id).join(',');
+  /** 同一批票只确认一次：用户点过「仍然打印」之后不该每次再问 */
+  const ackedFallbacks = useRef('');
+
   const errorCount = printItems.filter((it) => worstLevel(problems.get(it.id) ?? []) === 'error').length;
   const warnCount = printItems.filter((it) => worstLevel(problems.get(it.id) ?? []) === 'warn').length;
   const marks = tally(state.marks, printItems);
@@ -208,13 +221,13 @@ export function MergePrint() {
     void updateInvoiceFields(sha, next).catch(() => undefined);
   };
 
-  const compose = async (mode: 'print' | 'download'): Promise<void> => {
+  const runCompose = async (mode: 'print' | 'download'): Promise<void> => {
     if (printItems.length === 0 || composing) return;
     setComposing(true);
     try {
       const { composePrintPdf, printPdf } = await import('../lib/print');
       const rasterized = state.settings.rasterCompat || state.settings.blackWhite;
-      const { bytes } = await composePrintPdf(printItems, spec, {
+      const composed = await composePrintPdf(printItems, spec, {
         cutLines: state.settings.cutLines,
         pageNumbers: state.settings.pageNumbers,
         rasterCompat: state.settings.rasterCompat,
@@ -223,7 +236,18 @@ export function MergePrint() {
           ? (done, total) => setProgress(`正在转成图片 ${done}/${total} 页…`)
           : undefined,
       });
+      const bytes = composed.bytes;
       setProgress(null);
+
+      /**
+       * 合成之后才知道的降级（是 PDF 但没嵌进去）—— 打印前那份清单里没有它。
+       * 这种是意外，得当场说，用户要靠「老打印机兼容」自救。
+       */
+      const unexpected = composed.fallbacks.filter((f) => f.reason === 'embed-failed');
+      const surprise =
+        unexpected.length > 0
+          ? `其中 ${unexpected.length} 张票面没嵌进去，打成了信息卡，试试勾上「老打印机兼容」再打一次`
+          : '';
 
       // 签名字节有点长，但这里就是「点一下就把事情做完」的地方，拆开反而更难读
       const ids = printItems.map((it) => it.id);
@@ -238,7 +262,7 @@ export function MergePrint() {
           dispatch({
             type: 'toast',
             toast: {
-              text: `已保存：${outcome.name}`,
+              text: surprise ? `已保存：${outcome.name}（${surprise}）` : `已保存：${outcome.name}`,
               actions: [
                 { label: '在文件夹里显示', primary: true, run: () => revealSaved(outcome.path) },
                 { label: '好', run: () => undefined },
@@ -278,10 +302,13 @@ export function MergePrint() {
 
       dispatch({ type: 'printed', ids });
       // 桌面上报一下交给了哪台打印机（toast 只有一个，后面「标记已报销」会盖掉它 —— 报销更重要）
-      if (result.message && isDesktop()) {
+      if (result.message && (isDesktop() || surprise)) {
         dispatch({
           type: 'toast',
-          toast: { text: result.message, actions: [{ label: '好', run: () => undefined }] },
+          toast: {
+            text: surprise ? `${result.message}；${surprise}` : result.message,
+            actions: [{ label: '好', run: () => undefined }],
+          },
         });
       }
       if (state.prefs.remindReimburse) {
@@ -312,6 +339,51 @@ export function MergePrint() {
       setProgress(null);
       setComposing(false);
     }
+  };
+
+  const compose = async (mode: 'print' | 'download'): Promise<void> => {
+    if (printItems.length === 0 || composing) return;
+
+    /**
+     * 有票印不成票面：先问一句再出纸。
+     *
+     * 「出纸之后再说」是没有意义的 —— 那时纸已经打出来了。这里给两条出路：
+     * 继续（用户就是要这张信息卡当凭证摘要）或剔除（多数时候 OFD 打信息卡没意义）。
+     * 同一批票只问一次，否则每次点打印都要多一次点击。
+     */
+    if (fallbacks.length > 0 && ackedFallbacks.current !== fallbackKey) {
+      const reasons = new Set(fallbacks.map((f) => f.reason));
+      const why =
+        reasons.size === 1 && fallbacks[0]
+          ? FALLBACK_HINT[fallbacks[0].reason]
+          : '没有可打印的票面';
+      dispatch({
+        type: 'toast',
+        toast: {
+          text: `其中 ${fallbacks.length} 张${why}，打出来的是信息卡（只有号码 / 金额 / 日期），不是发票原样。`,
+          actions: [
+            {
+              label: mode === 'print' ? '仍然打印' : '仍然下载',
+              primary: true,
+              run: () => {
+                ackedFallbacks.current = fallbackKey;
+                void runCompose(mode);
+              },
+            },
+            {
+              label: '剔除这些票',
+              run: () => {
+                dispatch({ type: 'skip/many', ids: fallbacks.map((f) => f.id), skip: true });
+                dispatch({ type: 'toast', toast: null });
+              },
+            },
+          ],
+        },
+      });
+      return;
+    }
+
+    await runCompose(mode);
   };
 
   if (state.items.length === 0) return <EmptyState dragOver={false} />;
@@ -405,6 +477,28 @@ export function MergePrint() {
             <span className="spacer" />
             <button type="button" className="link" onClick={copySummary}>
               复制统计
+            </button>
+          </div>
+        )}
+
+        {fallbacks.length > 0 && (
+          <div className="banner warn">
+            <span>
+              其中 {fallbacks.length} 张没有票面（
+              {new Set(fallbacks.map((f) => f.reason)).size === 1 && fallbacks[0]
+                ? FALLBACK_HINT[fallbacks[0].reason]
+                : '原因不止一种'}
+              ），打印出来的是<b>信息卡</b>，不是发票原样。
+            </span>
+            <span className="spacer" />
+            <button
+              type="button"
+              className="link"
+              onClick={() =>
+                dispatch({ type: 'skip/many', ids: fallbacks.map((f) => f.id), skip: true })
+              }
+            >
+              从本次打印中剔除
             </button>
           </div>
         )}
