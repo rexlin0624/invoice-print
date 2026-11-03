@@ -21,6 +21,7 @@ import { previewFallbacks } from '../lib/fallback';
 import type { IntakeItem } from '../lib/intake';
 import { alreadyHandled, updateInvoiceFields } from '../lib/library';
 import { anyCropped, layoutItems } from '../lib/pages';
+import { rememberedPrinter } from '../lib/printer';
 import { saveBytes, revealSaved, saveText } from '../lib/save';
 import { isDesktop, openPath } from '../lib/shell';
 import { money } from '../lib/format';
@@ -273,7 +274,8 @@ export function MergePrint() {
         return;
       }
 
-      const result = await printPdf(bytes, '发票合并打印.pdf');
+      // 桌面版：发到用户在设置里选的那台打印机（没选就跟随系统、弹打印对话框）
+      const result = await printPdf(bytes, '发票合并打印.pdf', rememberedPrinter() || undefined);
 
       if (!result.ok) {
         // 打印没成：告诉用户为什么，并给一条「自己打」的出路 —— 不要死胡同

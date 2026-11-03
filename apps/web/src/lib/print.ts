@@ -307,7 +307,8 @@ export async function composePrintPdf(
 
 /**
  * 打印。两条路：
- * - **桌面版**：字节交给 Rust 写临时文件再交给系统（macOS/Linux `lp`，Windows `-Verb Print`）。
+ * - **桌面版**：字节交给 Rust 写临时文件再交给系统（macOS/Linux `lp`，Windows `-Verb Print`；
+ *   指定了打印机就直发那台 —— Windows 上靠 SumatraPDF）。
  *   桌面端不能学网页版用隐藏 iframe：`window.print()` 打的是当前界面不是合成 PDF，
  *   而且 WKWebView / WebView2 里 iframe 根本渲染不了 PDF 流。
  * - **网页版**：隐藏 iframe 调系统打印对话框；不支持时退化成「新标签页打开 PDF，自己按 ⌘P」。
@@ -320,10 +321,17 @@ export interface PrintResult {
   path?: string;
 }
 
-export async function printPdf(bytes: Uint8Array, fileName: string): Promise<PrintResult> {
+export async function printPdf(
+  bytes: Uint8Array,
+  fileName: string,
+  printer?: string,
+): Promise<PrintResult> {
   if (isDesktop()) {
-    const outcome = await printDocument(bytes, fileName);
-    logLine(`print ${outcome.ok ? 'ok' : 'failed'}: ${outcome.message}`);
+    const outcome = await printDocument(bytes, fileName, printer);
+    logLine(
+      `print ${outcome.ok ? 'ok' : 'failed'}: ${outcome.message}` +
+        (printer ? ` (printer=${printer})` : ''),
+    );
     return { ok: outcome.ok, message: outcome.message, path: outcome.path };
   }
   printViaBrowser(bytes, fileName);

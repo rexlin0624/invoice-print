@@ -74,6 +74,7 @@ pub fn run() {
             files::read_document,
             files::save_document,
             print::print_document,
+            print::list_printers,
             shell::reveal_path,
             shell::open_path,
             store::store_list,

@@ -4,8 +4,11 @@ import { useEffect, useState } from 'react';
 
 import { buildCalibrationPdf } from '../lib/calib';
 import { printPdf } from '../lib/print';
+import { loadPrinters, rememberPrinter, rememberedPrinter } from '../lib/printer';
 import type { LayoutPreset } from '../lib/presets';
 import { deletePreset, describePreset, listPresets, savePreset } from '../lib/presets';
+import type { PrinterList } from '../lib/shell';
+import { isDesktop } from '../lib/shell';
 import type { ThemePreference } from '../lib/theme';
 import { setThemePreference, themePreference } from '../lib/theme';
 import { useStore } from '../state/store';
@@ -79,7 +82,12 @@ export function Drawer() {
     setCalibBusy(true);
     try {
       const bytes = await buildCalibrationPdf(state.settings);
-      const result = await printPdf(bytes, '打印校准测试页.pdf');
+      // 校准页必须打到**用户选的那台**打印机上：偏移是按机器量的，打给别的机器没意义
+      const result = await printPdf(
+        bytes,
+        '打印校准测试页.pdf',
+        rememberedPrinter() || undefined,
+      );
       dispatch({ type: 'toast', toast: { text: result.message, actions: [] } });
     } catch (err) {
       dispatch({
@@ -275,6 +283,11 @@ export function Drawer() {
                 ))}
               </ul>
             )}
+          </section>
+
+          <section className="group">
+            <h3>打印机</h3>
+            <PrinterRow />
           </section>
 
           <section className="group">
@@ -482,6 +495,86 @@ function OcrModelNotice() {
       <code> pnpm ocr:prepare </code>
       再刷新本页即可；模型只在这台电脑上，发票不会被上传。
     </p>
+  );
+}
+
+/**
+ * 打印机选择（**只有桌面版有**）。
+ *
+ * 默认「跟随系统」= 弹打印对话框，那是最不容易出错的一条路。
+ * 选定一台后就直发过去、不再弹窗 —— Windows 上这条路要靠 SumatraPDF，
+ * 没装时选项直接禁用并把原因写在下面，而不是让用户选了之后才发现打不出去。
+ */
+function PrinterRow() {
+  const [list, setList] = useState<PrinterList | null>(null);
+  const [value, setValue] = useState<string>(() => rememberedPrinter());
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    if (!isDesktop()) return;
+    let alive = true;
+    void loadPrinters().then((found) => {
+      if (!alive) return;
+      if (found) setList(found);
+      else setFailed(true);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // 网页版没有外壳可问：这项设置整个不出现，比给一个永远灰着的下拉框清楚
+  if (!isDesktop()) return null;
+
+  const direct = list?.direct ?? false;
+  const known = list?.printers.some((p) => p.name === value) ?? true;
+  const hint = failed
+    ? '读不到打印机列表，先用「跟随系统」'
+    : list && !direct
+      ? '装了 SumatraPDF 才能指定打印机'
+      : '选定一台后直接发过去，不再弹对话框';
+
+  return (
+    <>
+      <Row label="打印机" hint={hint}>
+        <select
+          value={value}
+          disabled={list === null}
+          onChange={(e) => {
+            const next = e.target.value;
+            setValue(next);
+            rememberPrinter(next);
+          }}
+        >
+          <option value="">跟随系统（弹打印对话框）</option>
+          {list?.printers.map((printer) => (
+            <option key={printer.name} value={printer.name} disabled={!direct}>
+              {printer.name}
+              {printer.isDefault ? '（默认）' : ''}
+            </option>
+          ))}
+          {/* 记住的那台在这台机器上没有（换电脑 / 打印机改名）：留着别吞掉，让用户看得见 */}
+          {value !== '' && list !== null && !known && (
+            <option value={value}>{value}（本机没找到）</option>
+          )}
+        </select>
+      </Row>
+      {list && !direct && list.note && (
+        <p className="help-note" style={{ margin: '2px 0 6px' }}>
+          {list.note}
+        </p>
+      )}
+      {failed && (
+        <p className="help-note" style={{ margin: '2px 0 6px' }}>
+          没读到打印机列表（系统打印服务没开？）。不影响打印，只是每次都要在对话框里选。
+        </p>
+      )}
+      {list && list.printers.length === 0 && (
+        <p className="help-note" style={{ margin: '2px 0 6px' }}>
+          这台电脑还没配打印机。
+        </p>
+      )}
+    </>
   );
 }
 

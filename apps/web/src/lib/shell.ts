@@ -50,6 +50,19 @@ export interface PrintOutcome {
   path: string;
 }
 
+export interface PrinterInfo {
+  name: string;
+  isDefault: boolean;
+}
+
+export interface PrinterList {
+  printers: PrinterInfo[];
+  /** 能不能「直接发到指定打印机」（Windows 上取决于有没有装 SumatraPDF） */
+  direct: boolean;
+  /** `direct === false` 时给用户看的解释 */
+  note: string;
+}
+
 export interface StoreEntry {
   name: string;
   size: number;
@@ -130,10 +143,26 @@ export async function saveDocument(
   return (result ?? null) as WrittenFile | null;
 }
 
-/** 交给系统打印（临时文件在应用缓存目录里） */
-export async function printDocument(bytes: Uint8Array, fileName: string): Promise<PrintOutcome> {
-  const headers = { name: encodeHeaderValue(fileName) };
+/**
+ * 交给系统打印（临时文件在应用缓存目录里）。
+ *
+ * `printer` 省略 = 跟随系统（Windows 弹 PDF 阅读器的打印对话框，macOS/Linux 打给默认打印机）；
+ * 给了名字 = 直接发到那台打印机（Windows 需要 SumatraPDF，没有的话 Rust 侧会报错，
+ * **不会**偷偷改发默认打印机）。
+ */
+export async function printDocument(
+  bytes: Uint8Array,
+  fileName: string,
+  printer?: string,
+): Promise<PrintOutcome> {
+  const headers: Record<string, string> = { name: encodeHeaderValue(fileName) };
+  if (printer) headers.printer = encodeHeaderValue(printer);
   return (await requireInvoke()('print_document', bytes, { headers })) as PrintOutcome;
+}
+
+/** 本机打印机清单（桌面端才有；失败会抛，调用方自己兜住） */
+export async function listPrinters(): Promise<PrinterList> {
+  return (await requireInvoke()('list_printers')) as PrinterList;
 }
 
 /** 在文件管理器里显示（访达会选中它） */
