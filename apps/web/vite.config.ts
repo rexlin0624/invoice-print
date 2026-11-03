@@ -137,7 +137,27 @@ export default defineConfig({
   server: { host: '127.0.0.1', port: 5180, strictPort: true },
   // 桌面端（M4）会以 file:// 或自定义协议加载，用相对路径最稳
   base: './',
-  build: { target: 'safari15', sourcemap: true },
+  // 生产包默认**不带** sourcemap。
+  //
+  // 它们会跟着 `dist/` 一起发布（Release 的 web zip 就是整个 `dist/`），
+  // 8 个 `.map` 约 7 MB，等于把源码结构一起公开。要在本地排查产物时用
+  // `SOURCE_MAP=1 pnpm build`，不要改回 `true`。
+  build: {
+    target: 'safari15',
+    sourcemap: process.env.SOURCE_MAP === '1',
+    // 生产 CSP 冒烟（e2e 的第二段）需要第二个 HTML 入口。只在显式开启时加，
+    // 正常构建与 Tauri 构建的产物清单不受影响。
+    ...(process.env.E2E_CSP === '1'
+      ? {
+          rollupOptions: {
+            input: {
+              main: fileURLToPath(new URL('index.html', import.meta.url)),
+              'csp-smoke': fileURLToPath(new URL('e2e/csp-smoke.html', import.meta.url)),
+            },
+          },
+        }
+      : {}),
+  },
   // pdfjs 的 worker 体积大，不要 inline
   worker: { format: 'es' },
 });

@@ -11,9 +11,9 @@ import JSZip from 'jszip';
 
 import type { Invoice, Issue } from '../model/invoice';
 import {
-  amountIsNegative,
   MAX_INVOICE_PAGES,
   makeIssue,
+  negativeAmountField,
   SOURCE_CONFIDENCE,
   wordsSayNegative,
 } from '../model/invoice';
@@ -310,7 +310,8 @@ export async function parseInvoiceFile(input: ParseInput): Promise<ParseOutcome>
     applyQr();
     if (invoice.isRed !== undefined) return;
 
-    const byAmount = amountIsNegative(invoice);
+    const negativeField = negativeAmountField(invoice);
+    const byAmount = negativeField !== undefined;
     const byWords = !byAmount && wordsSayNegative(invoice);
     if (!byAmount && !byWords) return;
 
@@ -323,7 +324,8 @@ export async function parseInvoiceFile(input: ParseInput): Promise<ParseOutcome>
         byAmount
           ? '识别为红冲（负数）发票：金额为负，将从合计中抵扣，且不参与凑票。'
           : '识别为红冲（负数）发票：大写金额里带「负」，数字金额漏了负号，记账按负数处理。',
-        byAmount ? 'total' : 'totalInWords',
+        // 指到**真正为负的那一格**：`total` 没读到时可能是 amount / tax
+        byAmount ? negativeField : 'totalInWords',
       ),
     );
   };

@@ -36,3 +36,6 @@ apps/web/public/samples/
 # 运行时从 node_modules 复制，模型从官方地址下载，都能重建。
 # 新克隆的机器跑一次 `pnpm ocr:prepare`（见 apps/web/scripts/prepare-ocr.mjs）。
 apps/web/public/ocr/
+
+# e2e 的生产 CSP 冒烟会构建到这里（src/e2e/csp-smoke.ts 的入口产物）
+apps/web/dist-e2e/

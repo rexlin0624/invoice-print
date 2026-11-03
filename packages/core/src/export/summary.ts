@@ -75,7 +75,9 @@ export function summarizeBatch(invoices: readonly Invoice[]): BatchSummary {
 
     if (total === undefined) missingAmount += 1;
     else amountTotal += total;
-    if (inv.tax !== undefined) taxTotal += red ? -Math.abs(inv.tax) : inv.tax;
+    if (inv.tax !== undefined) {
+      taxTotal += red && inv.tax !== 0 ? -Math.abs(inv.tax) : inv.tax;
+    }
 
     if (red) {
       redCount += 1;

@@ -107,7 +107,8 @@ export function centsToYuan(cents: number): number {
  * 不同的不含税金额与税额符号。所以要导出，不要各写一份。
  */
 export function signedAmount(inv: Invoice, value: number): number {
-  return isRedInvoice(inv) ? -Math.abs(value) : value;
+  if (!isRedInvoice(inv) || value === 0) return value;
+  return -Math.abs(value);
 }
 
 function cellFor(inv: Invoice, field: ExportField, marks: Readonly<Record<string, MarkValue>>): string | number | undefined {

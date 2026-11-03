@@ -96,10 +96,16 @@
 - 网页版构建产物带 **CSP**（`default-src 'self'`、`connect-src 'self'`），
   能拦住 fetch/XHR、脚本、图片、字体、frame 与 Worker 的跨源加载。
   `pnpm build` 末尾的 `apps/web/scripts/check-build.mjs` 会**逐条指令精确核对**入口 HTML 的 CSP，
-  并检查没有外部资源引用、没有内联脚本、`dist` 里没有发票文件；改坏了构建就红。
-- `pnpm e2e` 另有一条整页断言：Resource Timing 加 fetch / XHR / WebSocket / `sendBeacon` /
-  Worker 调用的记录里，不允许出现跨源地址。
-- **没覆盖到的**：顶层导航（`location.href`）、Worker 内部自己发的请求、Service Worker。
+  并检查没有外部资源引用、没有内联脚本；`dist` 走**允许清单**（只认入口 HTML、`assets/`、`ocr/`），
+  多一个文件就红 —— 顺手也挡住 sourcemap 与误放进 `public/` 的发票/扫描件。
+- `pnpm e2e` 有两层证据：渲染回归末尾的**整页零外部请求**断言（按 host 判定，
+  同机不同端口/协议不算出网；Resource Timing 加
+  fetch / XHR / WebSocket / `sendBeacon` / Worker 调用），以及一段**生产 CSP 冒烟**——
+  在构建产物上真跑一次浏览器，确认 fetch / 图片 / 脚本 / iframe 的跨源加载都被
+  CSP 拦下、同源请求不被误伤，并且金丝雀服务器**一次都没收到**这些请求。
+- **没覆盖到的**：顶层导航（`location.href`、`window.open`、`location.assign`）、
+  Worker 内部自己发的请求、Service Worker。跨源 iframe 会被 `frame-src` 拦住，
+  但 e2e 只记录 fetch/XHR/WebSocket/beacon/Worker 的**调用尝试**，记不到 iframe 的尝试。
   CSP 也管不到导航；静态托管时建议再加一条响应头 `frame-ancestors 'none'`（`<meta>` 表达不了）。
 - 网页版的「已报销库」存在浏览器 IndexedDB 里；清除浏览器数据会清掉它，
   重要记录请用「转 Excel」导出，或改用桌面版。
@@ -156,8 +162,8 @@ pnpm dev           # http://localhost:5180
 pnpm test          # 内核回归（解析 / 去重 / 排版 / 导出）+ 外壳桥单测
 pnpm test:samples  # 真票样本回归（用 SAMPLES_DIR 指向你的私有样本目录）
 pnpm typecheck     # 全部子包类型检查
-pnpm build         # 产出 apps/web/dist（静态站点），并校验产物 CSP / 外链 / 内联脚本 / 发票文件
-pnpm e2e           # 真实浏览器回归：无头 Chrome，14 项检查（含零外部请求）
+pnpm build         # 产出 apps/web/dist（静态站点），并校验产物 CSP / 外链 / 内联脚本 / 文件清单
+pnpm e2e           # 真实浏览器回归：14 项渲染检查 + 8 项生产 CSP 冒烟（含零外部请求）
 pnpm desktop:dev   # 桌面版（Tauri）：Vite + 原生窗口，需先满足 Rust 编译纪律
 ```
 

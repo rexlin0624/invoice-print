@@ -6,7 +6,7 @@
  */
 
 import type { Invoice, Issue } from '../model/invoice';
-import { makeIssue, wordsSayNegative } from '../model/invoice';
+import { makeIssue, negativeAmountField, wordsSayNegative } from '../model/invoice';
 import { capitalToCents } from '../model/money';
 import { checkTaxId } from './uscc';
 
@@ -104,32 +104,43 @@ export function validateInvoice(inv: Invoice, options: ValidateOptions = {}): Is
   // 两个方向都要查：标了红冲但金额是正数，和标了「不是红冲」但金额是负数，
   // 都是人工校正与票面矛盾的信号，比静默按其中一个走安全。
   //
-  // 三个金额字段都要看：`total` 没识别到时，`amount` 仍然可能把矛盾暴露出来
+  // 三个金额字段都要看，但**方向证据只看 total / amount**：税额为负可能是折扣
+  // （不含税为正、税额为负、价税合计仍为正），把它当红冲会静默抵扣。
+  // `total` 没识别到时，`amount` 仍然可能把矛盾暴露出来
   // （`invoiceTotal` 会用 `amount + tax` 回退，汇总照样按负数抵扣）。
   if (inv.isRed === true) {
-    const negative =
-      (inv.total !== undefined && inv.total < 0) || (inv.amount !== undefined && inv.amount < 0);
+    const negativeField = negativeAmountField(inv);
     const positive =
       (inv.total !== undefined && inv.total > 0) || (inv.amount !== undefined && inv.amount > 0);
-    if (positive && !negative) {
+    if (positive && negativeField === undefined) {
+      const field = inv.total !== undefined ? 'total' : 'amount';
       const shown = inv.total ?? inv.amount;
       const label = inv.total !== undefined ? '价税合计' : '不含税金额';
+      // 方向是解析期推出来的（大写写了「负」、小写漏了负号）时，别说成「用户标记的」——
+      // 否则每张正常的红冲票导入即带一条黄色警告，真正的人工矛盾反而被淹没。
+      const derived = inv.provenance.isRed?.source === 'derived';
       issues.push(
         makeIssue(
           'red-invoice',
           'warn',
-          `标记为红冲，但${label}是正数（${fmt(shown!)}），请核对票面。`,
-          inv.total !== undefined ? 'total' : 'amount',
+          derived
+            ? `大写金额里带「负」，已按红冲（负数）记账；但${label}是正数（${fmt(shown!)}），请核对小写是否漏了负号。`
+            : `标记为红冲，但${label}是正数（${fmt(shown!)}），请核对票面。`,
+          field,
         ),
       );
     }
   }
   if (inv.isRed === false) {
-    const negative =
-      (inv.total !== undefined && inv.total < 0) || (inv.amount !== undefined && inv.amount < 0);
-    if (negative) {
+    const negativeField = negativeAmountField(inv);
+    if (negativeField !== undefined) {
       issues.push(
-        makeIssue('red-invoice', 'warn', '已标记为「不是红冲」，但金额是负数，请核对票面。', 'total'),
+        makeIssue(
+          'red-invoice',
+          'warn',
+          '已标记为「不是红冲」，但金额是负数，请核对票面。',
+          negativeField,
+        ),
       );
     }
   }

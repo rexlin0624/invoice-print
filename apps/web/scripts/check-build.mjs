@@ -15,7 +15,9 @@
  * 2. `tauri.conf.json` 的 `csp` / `devCsp` 逐条核对，**任何构建都跑**（纯文件读取）；
  *    Tauri 构建里还额外要求产物**不注入**网页版 meta；
  * 3. `index.html` 没有外部（http/https/协议相对）资源引用，也没有内联 `<script>`；
- * 4. `dist` 里没有发票/压缩包文件（真票是个人数据，绝不能随产物发出去）。
+ * 4. `dist` 走**允许清单**：只认构建器会产出的文件（入口 HTML、`assets/`、`ocr/`、
+ *    favicon 之类的根文件），任何别的文件都判失败 —— 发票、扫描件、压缩包、
+ *    sourcemap 都不该随产物发出去。黑名单挡不住 `.jpg/.csv/.map`，所以这里用白名单。
  *
  * 边界（不要把它当成「零外联」的完整证明）：这里只看**静态产物**。
  * JS chunk 运行时 `fetch('https://…')`、Worker 内部请求、顶层导航、WebSocket
@@ -26,7 +28,7 @@
 
 import { existsSync } from 'node:fs';
 import { readFile, readdir } from 'node:fs/promises';
-import { extname, join, relative } from 'node:path';
+import { extname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const DIST = fileURLToPath(new URL('../dist/', import.meta.url));
@@ -282,8 +284,36 @@ if (inlineScripts.length > 0) {
   pass('没有内联 <script>');
 }
 
-// ---- 4. dist 里不许有发票 / 压缩包 ----
-const BANNED = new Set(['.pdf', '.ofd', '.xml', '.zip']);
+// ---- 4. dist 只允许构建器会产出的文件（允许清单） ----
+//
+// 为什么不用黑名单：真票可能是 `.jpg` 扫描件、对账单是 `.csv/.xlsx`、
+// sourcemap 是 `.map` —— 一个个补扩展名永远会漏。这里反过来只放行已知产物，
+// 多出任何文件都要人来解释。
+const ALLOWED_ROOT_FILES = new Set([
+  'index.html',
+  'favicon.ico',
+  'favicon.svg',
+  'favicon.png',
+  'manifest.webmanifest',
+  'robots.txt',
+]);
+const ALLOWED_ROOT_DIRS = new Set(['assets', 'ocr']);
+/** `assets/` 里只允许 Vite 会产出的类型（sourcemap 不在其中） */
+const ALLOWED_ASSET_EXT = new Set([
+  '.js',
+  '.mjs',
+  '.css',
+  '.wasm',
+  '.woff',
+  '.woff2',
+  '.ttf',
+  '.otf',
+  '.png',
+  '.svg',
+  '.webp',
+  '.avif',
+]);
+
 async function walk(dir) {
   const out = [];
   for (const entry of await readdir(dir, { withFileTypes: true })) {
@@ -294,16 +324,50 @@ async function walk(dir) {
   return out;
 }
 
-const leaked = (await walk(DIST))
-  .filter((file) => BANNED.has(extname(file).toLowerCase()))
-  .map((file) => relative(DIST, file));
-if (leaked.length > 0) {
+/** 相对 `dist/` 的 POSIX 路径，便于比对清单 */
+const files = (await walk(DIST)).map((file) => relative(DIST, file).split(sep).join('/'));
+
+const isAllowed = (file) => {
+  const parts = file.split('/');
+  const root = parts[0] ?? '';
+  if (parts.length === 1) return ALLOWED_ROOT_FILES.has(root);
+  if (!ALLOWED_ROOT_DIRS.has(root)) return false;
+  // OCR 模型目录内容随 tesseract.js 版本变（wasm / traineddata / gz），整体放行
+  if (root === 'ocr') return true;
+  return (
+    parts.length === 2 && ALLOWED_ASSET_EXT.has(extname(file).toLowerCase())
+  );
+};
+
+const sourceMaps = files.filter((file) => file.toLowerCase().endsWith('.map'));
+const allowSourceMaps = process.env.SOURCE_MAP === '1';
+if (sourceMaps.length > 0) {
+  if (allowSourceMaps) {
+    pass(
+      `本地排查构建保留了 ${sourceMaps.length} 个 sourcemap（SOURCE_MAP=1；` +
+        '这个包不要发布）',
+    );
+  } else {
+    fail(
+      `dist 里有 ${sourceMaps.length} 个 sourcemap（会把源码结构随 web zip 一起发出去）：` +
+        sourceMaps.slice(0, 5).join(', ') +
+        '\n  生产构建应当 `sourcemap: false`；本地排查用 `SOURCE_MAP=1 pnpm build`',
+    );
+  }
+}
+
+const unexpected = files.filter((file) => !file.endsWith('.map') && !isAllowed(file));
+if (unexpected.length > 0) {
   fail(
-    `dist 里有 ${leaked.length} 个发票/压缩包文件（真票是个人数据，不能随产物发布）：` +
-      leaked.join(', '),
+    `dist 里有 ${unexpected.length} 个未批准的文件/目录（真票、扫描件、对账单、压缩包都不该进产物）：` +
+      unexpected.slice(0, 10).join(', ') +
+      (unexpected.length > 10 ? ` …（共 ${unexpected.length} 个）` : ''),
   );
 } else {
-  pass('dist 里没有发票/压缩包文件');
+  pass(
+    `dist 文件清单符合允许清单（${files.length} 个文件` +
+      `${sourceMaps.length === 0 ? '，无 sourcemap' : ''}）`,
+  );
 }
 
 // ---- 输出 ----

@@ -387,7 +387,7 @@ export function isCorrected(invoice: Pick<Invoice, 'provenance'>): boolean {
  * 该矛盾由 `validate` 给 warn。这里只保证**记账口径**一致。
  */
 export function invoiceTotal(
-  invoice: Pick<Invoice, 'total' | 'amount' | 'tax' | 'isRed' | 'totalInWords'>,
+  invoice: Partial<Pick<Invoice, 'total' | 'amount' | 'tax' | 'isRed' | 'totalInWords'>>,
 ): Cents | undefined {
   const raw =
     invoice.total !== undefined
@@ -396,6 +396,8 @@ export function invoiceTotal(
         ? invoice.amount + invoice.tax
         : undefined;
   if (raw === undefined) return undefined;
+  // 0 元不取负：`-Math.abs(0)` 是 `-0`，导出/汇总里可能显示成 `-0.00`。
+  if (raw === 0) return 0;
   // 方向也走 `isRedInvoice()`，不在这里另判 `isRed === true`。
   // 否则「票面写了红字、数字金额漏了负号」这类票会出现内部打架：`settle()` 给了
   // `isRed = true`、`redCount` 记了 1 张，合计却把 5000 加了进去。
@@ -414,24 +416,51 @@ export function invoiceTotal(
  * 会被 `total < 0` 重新推翻，人工校正就白做了。
  */
 export function isRedInvoice(
-  invoice: Pick<Invoice, 'isRed' | 'total' | 'amount' | 'totalInWords'>,
+  invoice: Partial<Pick<Invoice, 'isRed' | 'total' | 'amount' | 'totalInWords'>>,
 ): boolean {
   if (invoice.isRed !== undefined) return invoice.isRed;
   return amountIsNegative(invoice) || wordsSayNegative(invoice);
 }
 
-/** 金额（价税合计优先，其次不含税）为负 —— 红冲最硬的证据 */
-export function amountIsNegative(
-  invoice: Pick<Invoice, 'total' | 'amount'>,
-): boolean {
-  return (invoice.total !== undefined && invoice.total < 0) || (invoice.amount !== undefined && invoice.amount < 0);
+/**
+ * 金额栏里第一个为负的字段 —— 红冲最硬的证据。
+ *
+ * **只看 `total` / `amount`，不看 `tax`**：折扣票的特征正是「不含税金额为正、税额为负、
+ * 价税合计仍为正」（`test/independent.redInvoice.test.ts` 里钉着）。把税额也算成方向证据，
+ * 折扣票就会被静默记成红冲、从合计里抵扣 —— 比漏判更糟。
+ *
+ * `total` 没识别到时，`amount` 仍然可能把方向暴露出来；`settle()` 与 `validate()`
+ * 都从这里取字段名，避免「判定说红冲、提示却指不到格子」。
+ */
+export function negativeAmountField(
+  invoice: Partial<Pick<Invoice, 'total' | 'amount'>>,
+): 'total' | 'amount' | undefined {
+  if (invoice.total !== undefined && invoice.total < 0) return 'total';
+  if (invoice.amount !== undefined && invoice.amount < 0) return 'amount';
+  return undefined;
+}
+
+/** 价税合计或不含税金额为负 —— 红冲最硬的证据（税额为负可能是折扣，不算） */
+export function amountIsNegative(invoice: Partial<Pick<Invoice, 'total' | 'amount'>>): boolean {
+  return negativeAmountField(invoice) !== undefined;
 }
 
 /** 大写金额正文里会出现的字符（正体 + 繁体「萬/圓」+ 常见异写） */
 const WORDS_AMOUNT_CHAR = /[零壹贰叁肆伍陆柒捌玖拾佰仟萬万亿圓圆元角分整正〇]/;
 
-/** 方向写在金额后面的括号里：『伍仟圆整（负）』『伍仟圆整（负数）』 */
-const WORDS_SIGNED_SUFFIX = /[（(]\s*负(?:数)?\s*[)）]\s*$/;
+/**
+ * 方向写在金额正文**之前**时，允许出现的全部内容。
+ *
+ * 必须是**整段匹配、且真的带方向标记**：以前用 `/[负負\-－—]/.test(head)`，
+ * `备注：不负任何责任 伍仟圆整` 这种把备注写在金额前面的票会被静默记成红冲 ——
+ * 和「备注写在金额后面」是同一个误判，只是换了个位置。
+ * 反过来，head 为空（`伍仟圆整`）也不能当成「匹配成功」，否则每张大写金额都成了负数。
+ */
+const WORDS_NEGATIVE_HEAD =
+  /^\s*(?:人民币|RMB|¥|￥)?\s*([（(]\s*[负負](?:数|數)?\s*[)）]|[负負](?:数|數)?|[-－—])\s*$/;
+
+/** 方向写在金额后面的括号里：『伍仟圆整（负）』『伍仟圆整（負數）』 */
+const WORDS_SIGNED_SUFFIX = /[（(]\s*[负負](?:数|數)?\s*[)）]\s*$/;
 
 /**
  * 大写金额里带「负」字（部分红冲票只在这里体现方向）。
@@ -442,20 +471,24 @@ const WORDS_SIGNED_SUFFIX = /[（(]\s*负(?:数)?\s*[)）]\s*$/;
  *
  * 所以认三种写法，别的一概不认：
  * 1. 方向在金额正文**之前**：`负伍仟圆整`、`（负）伍仟圆整`、`人民币负伍仟圆整`；
+ *    金额前面**只允许**币种前缀 + 一个方向标记，夹带任何备注都不算；
  * 2. 方向是金额前面的负号：`-伍仟圆整`、`－伍仟圆整`（自研模板/全角化会这么拼）；
  * 3. 方向写在金额**之后**的括号里：`伍仟圆整（负）`、`伍仟圆整（负数）` ——
  *    只认「括号里就是负/负数」，`（备注：不负任何责任）` 这类不算。
  *
- * 繁体「負」一并认（有些票面/OCR 会混用）。
+ * 繁体「負」在前缀与后缀里都一并认（有些票面/OCR 会混用）。
+ *
+ * 已知没认的写法：金额后缀 `（红字）`。真实红冲票可能出现，但手头没有样本，
+ * 先不靠猜放宽（票面文字层里的「红字/红冲」由 `parse/fields.ts` 单独识别）。
  */
-export function wordsSayNegative(invoice: Pick<Invoice, 'totalInWords'>): boolean {
+export function wordsSayNegative(invoice: Partial<Pick<Invoice, 'totalInWords'>>): boolean {
   const words = invoice.totalInWords;
   if (words === undefined) return false;
   const firstAmount = words.search(WORDS_AMOUNT_CHAR);
   // 一个金额字符都没有，就不是大写金额，别拿它当方向证据
   if (firstAmount === -1) return false;
   const head = words.slice(0, firstAmount);
-  if (/[负負\-－—]/.test(head)) return true;
+  if (WORDS_NEGATIVE_HEAD.test(head)) return true;
   return WORDS_SIGNED_SUFFIX.test(words);
 }
 

@@ -42,6 +42,12 @@ interface Result {
 
 const results: Result[] = [];
 
+// Resource Timing 默认缓冲只有 250 条。页面资源一多，早期条目会被静默挤掉，
+// 「整页零外部请求」就可能变成假绿 —— 开大一点，让整页的加载都留在列表里。
+if (typeof performance.setResourceTimingBufferSize === 'function') {
+  performance.setResourceTimingBufferSize(2000);
+}
+
 /**
  * 网络调用记录。
  *
@@ -480,7 +486,9 @@ async function main(): Promise<void> {
  * 2. `instrumentNetwork()` 在调用点记下的尝试（WebSocket / beacon / Worker / XHR）。
  *
  * 只统计会出网的协议（http/https/ws/wss）：`data:` / `blob:` 是本地管道（缩略图、打印 PDF）。
- * 用 host 而不是 origin 比较，否则 `ws://same-host` 会因为协议不同被当成跨源。
+ * 用 host 而不是 origin 比较：`ws://同主机` 是本地 HMR / 调试通道，协议不同不代表出网；
+ * 反过来任何外站域名（含子域）的 host 都不同，一定会被记下。同 host 不同端口 / 协议
+ * 仍算本机流量 —— 这条断言回答的是「数据有没有离开这台机器」。
  * report 自己的 POST 发生在这一步之后，不会把自己算进去。
  */
 function checkNoExternalRequests(): void {

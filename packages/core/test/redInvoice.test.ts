@@ -55,6 +55,11 @@ describe('isRedInvoice —— 唯一判定口径', () => {
     expect(isRedInvoice({ amount: -100 })).toBe(true);
   });
 
+  it('折扣票的负税额不算方向证据（只看 total / amount）', () => {
+    // 折扣票：不含税为正、税额为负、价税合计仍为正 —— 不能因为税额带负就记成红冲。
+    expect(isRedInvoice(inv({ amount: 100_000, tax: -10_000 }))).toBe(false);
+  });
+
   it('大写金额带「负」也算（部分红冲票只在中文大写里体现方向）', () => {
     expect(isRedInvoice({ totalInWords: '负伍仟圆整' })).toBe(true);
   });
@@ -76,6 +81,12 @@ describe('isRedInvoice —— 唯一判定口径', () => {
     expect(invoiceTotal(inv({ isRed: true, total: 500000 }))).toBe(-500000);
     expect(invoiceTotal(inv({ total: 500000 }))).toBe(500000);
     expect(invoiceTotal(inv({ isRed: true, amount: 500000, tax: 0 }))).toBe(-500000);
+  });
+
+  it('0 元红冲不返回 -0（导出里不该出现 -0.00）', () => {
+    // `-Math.abs(0)` 是 -0：`Object.is(-0, 0)` 为 false，
+    // 有些序列化 / 表格会把 -0 显示成「-0.00」。
+    expect(Object.is(invoiceTotal(inv({ isRed: true, total: 0 })), 0)).toBe(true);
   });
 });
 
@@ -113,6 +124,28 @@ describe('方向只在大写金额里（小写漏负号）', () => {
     const hit = issues.find((i) => i.code === 'red-invoice' && i.level === 'warn');
     expect(hit).toBeDefined();
     expect(hit?.field).toBe('totalInWords');
+  });
+
+  it('解析期推出的方向：warn 不冒充「用户标记为红冲」', () => {
+    const parsed = wordsOnly({
+      isRed: true,
+      provenance: { isRed: { source: 'derived', confidence: 0.9 } },
+    });
+    const hit = validateInvoice(parsed).find(
+      (i) => i.code === 'red-invoice' && i.level === 'warn',
+    );
+    expect(hit?.message).toContain('已按红冲（负数）记账');
+    expect(hit?.message).not.toContain('标记为红冲');
+  });
+
+  it('人工标记的红冲：warn 仍然说「标记为红冲」', () => {
+    const manual = inv({
+      isRed: true,
+      total: 500000,
+      provenance: { isRed: { source: 'manual', confidence: 1 } },
+    });
+    const hit = validateInvoice(manual).find((i) => i.code === 'red-invoice' && i.level === 'warn');
+    expect(hit?.message).toContain('标记为红冲');
   });
 
   it('解析路径：settle() 把「大写带负」也推成 isRed，且说明里写清依据', async () => {
@@ -173,6 +206,12 @@ describe('wordsSayNegative —— 只认写在金额前面的「负」', () => {
     expect(say('負伍仟圓整')).toBe(true);
   });
 
+  it('繁体「負」在金额后面的括号里也认', () => {
+    expect(say('伍仟圆整（負）')).toBe(true);
+    expect(say('伍仟圆整（負數）')).toBe(true);
+    expect(say('（負數）伍仟圆整')).toBe(true);
+  });
+
   it('负号写在前面（自研模板 / 全角化）也认', () => {
     expect(say('-伍仟圆整')).toBe(true);
     expect(say('－伍仟圆整')).toBe(true);
@@ -187,6 +226,18 @@ describe('wordsSayNegative —— 只认写在金额前面的「负」', () => {
   it('「负」出现在金额之后（备注、说明）不算方向证据', () => {
     expect(say('伍仟圆整（备注：不负任何责任）')).toBe(false);
     expect(say('伍仟圆整 负号见小写')).toBe(false);
+  });
+
+  it('备注写在金额前面同样不算方向证据', () => {
+    // 以前只收紧到「金额之前」，但 head 里只要出现「负」就认 —— 换个位置照样误判。
+    expect(say('备注：不负任何责任 伍仟圆整')).toBe(false);
+    expect(say('不含税金额为负时 伍仟圆整')).toBe(false);
+    expect(say('人民币伍仟圆整')).toBe(false);
+  });
+
+  it('已知未覆盖：金额后缀「（红字）」暂不认（等真票样本）', () => {
+    // 票面文字层里的「红字/红冲」由 parse/fields.ts 识别，这里只负责大写金额本身。
+    expect(say('伍仟圆整（红字）')).toBe(false);
   });
 
   it('没有金额字符就不是大写金额，别拿它当证据', () => {
