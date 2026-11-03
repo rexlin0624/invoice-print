@@ -47,6 +47,13 @@ describe('findAmounts', () => {
     expect(findAmounts('（小写）¥1,234.56')).toEqual([123456]);
   });
 
+  it('红冲票的负号要保留（实测老版红字专票：￥-7310.00 / ￥-950.30）', () => {
+    // 漏掉负号的后果不是少一个字符，而是整张红冲票按正数入账。
+    expect(findAmounts('合计————￥-7310.00—￥-950.30')).toEqual([-731000, -95030]);
+    expect(findAmounts('-3720.00')).toEqual([-372000]);
+    expect(findAmounts('-1,234.56')).toEqual([-123456]);
+  });
+
   it('不会把税率和数量当金额', () => {
     expect(findAmounts('税率13%')).toEqual([]);
     expect(findAmounts('数量35')).toEqual([]);
@@ -64,6 +71,19 @@ describe('capitalToCents（大写 → 分）', () => {
     expect(capitalToCents('零元整')).toBe(0);
     expect(capitalToCents('壹万贰仟叁佰肆拾伍圆陆角柒分')).toBe(1234567);
     expect(capitalToCents('壹亿圆整')).toBe(10000000000);
+  });
+
+  it('大写的方向标记（负）换算成负数', () => {
+    // 实测老版红字专票：价税合计（大写）负捌仟贰佰陆拾零元叁角
+    expect(capitalToCents('负捌仟贰佰陆拾零元叁角')).toBe(-826030);
+    expect(capitalToCents('（负）伍仟圆整')).toBe(-500000);
+    expect(capitalToCents('伍仟圆整（负数）')).toBe(-500000);
+    expect(capitalToCents('-伍仟圆整')).toBe(-500000);
+  });
+
+  it('金额里夹带「负」的备注不猜方向（仍按正数换算）', () => {
+    // 方向只认整段前缀/后缀；「备注：不负任何责任」不是方向标记。
+    expect(capitalToCents('伍仟圆整（备注：不负任何责任）')).toBe(500000);
   });
 
   it('非法输入返回 undefined', () => {

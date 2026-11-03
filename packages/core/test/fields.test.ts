@@ -175,6 +175,33 @@ describe('OCR 形态：标签被切碎 / 带噪声前缀', () => {
   });
 });
 
+/**
+ * 老票版式的两个坑：标签不带冒号、红字票上还有「对应蓝字发票号码」。
+ */
+describe('老票：无冒号标签 / 对应蓝票号码 / 底部单位名称', () => {
+  it('「对应蓝字发票号码」出现在本票号码之前时，也不能当成发票号码', () => {
+    const tokens = [
+      tok('对应蓝字发票号码', 40, 40, 72),
+      tok('08876325', 301, 40, 36),
+      tok('发票号码', 40, 70, 36),
+      tok('08876399', 301, 70, 36),
+    ];
+    const { fields } = extractInvoiceFields([buildPageText(0, PAGE_W, PAGE_H, tokens)]);
+    expect(fields.invoiceNo).toBe('08876399');
+  });
+
+  it('底部的「单位名称：」是落款，不能顶替销售方', () => {
+    const tokens = [
+      tok('名称：', 32, 103, 27),
+      tok('某某测试甲有限公司', 56, 103, 126),
+      tok('单位名称：某某测试乙有限公司', 38, 742, 160),
+    ];
+    const { fields } = extractInvoiceFields([buildPageText(0, PAGE_W, PAGE_H, tokens)]);
+    expect(fields.buyerName).toBe('某某测试甲有限公司');
+    expect(fields.sellerName).toBeUndefined();
+  });
+});
+
 describe('只剩一个「名称：」时的归属推断', () => {
   it('位于右半栏 → 销售方（OCR 常把「销售方」认丢）', () => {
     const tokens = [

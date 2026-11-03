@@ -18,6 +18,7 @@ import { applyCorrection, invoiceTotal, isRedInvoice, redMagnitude, wordsSayNega
 import { extractInvoiceFields } from '../src/parse/fields';
 import { parseInvoiceFile } from '../src/parse/index';
 import { buildPageText } from '../src/text/lines';
+import type { TextToken } from '../src/text/lines';
 import { validateInvoice } from '../src/validate/index';
 
 let seq = 0;
@@ -487,6 +488,89 @@ describe('解析期识别', () => {
     const r = extractInvoiceFields([page]);
     expect(r.fields.isRed).toBe(true);
     expect(r.issues.some((i) => i.code === 'red-invoice')).toBe(true);
+  });
+});
+
+/**
+ * 老版红字专票（A4 竖版，发票代码 + 8 位号码）的真实版式回归。
+ *
+ * 坐标与文字取自一张公开的合成红字专票（JQuick `119_red_offset_invoice.pdf`），
+ * 票面主体是虚构公司。这张票暴露了四个此前没覆盖的形态：
+ *   1. 标签**没有冒号**（发票号码 / 销货方名称 / 开票日期）；
+ *   2. 销货方在前、购货方在后（不能按「第 1 个名称 = 购买方」猜）；
+ *   3. 价税合计的标签单独一行，值在下一行；
+ *   4. 金额、大写都带方向（￥-7310.00 / 负捌仟…）。
+ */
+describe('票面文字层：老版红字专票（无冒号标签 / 负数）', () => {
+  function tok(text: string, x: number, y: number, width: number): TextToken {
+    return { text, x, y, width, height: 9 };
+  }
+
+  const page = buildPageText(0, 595.28, 841.89, [
+    // 页眉右上角的小字：与正文重复，证明「取第一个命中」仍然拿得到本票号码
+    tok('发票代码 011002100311', 307, 48, 79),
+    tok('发票号码 08876399', 401, 48, 64),
+    tok('对应信息表编号 33010', 480, 48, 75),
+    tok('0261000881234', 506, 58, 49),
+    tok('红字增值税专用发票', 44, 55, 131),
+    // 正文
+    tok('发票代码', 40, 98, 36),
+    tok('011002100311', 301, 98, 54),
+    tok('发票号码', 40, 126, 36),
+    tok('08876399', 301, 126, 36),
+    tok('开票日期', 40, 154, 36),
+    tok('2026年10月19日', 301, 154, 63),
+    tok('对应信息表编号', 40, 182, 63),
+    tok('330100261000881234', 301, 182, 81),
+    // 红字票专有：原蓝票号码（不是本票号码）
+    tok('对应蓝字发票号码', 40, 210, 72),
+    tok('08876325', 301, 210, 36),
+    tok('销货方名称', 40, 238, 45),
+    tok('××自动化科技有限公司', 301, 238, 99),
+    tok('销货方纳税人识别号', 40, 266, 81),
+    tok('91320100MA1Y2P94QD', 301, 266, 81),
+    tok('购货方名称', 40, 294, 45),
+    tok('××智能装备制造有限公司', 301, 294, 108),
+    tok('购货方纳税人识别号', 40, 322, 81),
+    tok('91320100MA1X7K38XG', 301, 322, 81),
+    // 合计（负数）
+    tok('合', 57, 571, 8),
+    tok('计', 73, 571, 8),
+    tok('￥-7310.00', 385, 571, 40),
+    tok('￥-950.30', 520, 571, 36),
+    // 价税合计：标签单独一行，值在下一行
+    tok('价税合计', 41, 608, 42),
+    tok('价税合计（大写）负捌仟贰佰陆拾零元叁角', 36, 640, 171),
+    tok('（小写）￥-8260.30', 225, 640, 81),
+    // 底部落款：不是购销方栏，不能当购买方
+    tok('单位名称：××自动化科技有限公司', 38, 742, 128),
+    tok('骑缝章沿右边线骑缝加盖', 300, 742, 88),
+  ]);
+
+  const { fields, anchors, issues } = extractInvoiceFields([page]);
+
+  it('号码取本票的，不取「对应蓝字发票号码」', () => {
+    expect(fields.invoiceNo).toBe('08876399');
+    expect(fields.invoiceCode).toBe('011002100311');
+    expect(anchors.invoiceNo).toContain('发票号码');
+  });
+
+  it('购销方按标签归属，不按出现顺序', () => {
+    expect(fields.sellerName).toBe('××自动化科技有限公司');
+    expect(fields.buyerName).toBe('××智能装备制造有限公司');
+    expect(fields.sellerTaxId).toBe('91320100MA1Y2P94QD');
+    expect(fields.buyerTaxId).toBe('91320100MA1X7K38XG');
+    expect(issues.filter((i) => i.code === 'low-confidence')).toEqual([]);
+  });
+
+  it('金额、税额、价税合计都保留负号，大写也带方向', () => {
+    expect(fields.amount).toBe(-731000);
+    expect(fields.tax).toBe(-95030);
+    expect(fields.total).toBe(-826030);
+    expect(fields.totalInWords).toBe('负捌仟贰佰陆拾零元叁角');
+    expect(fields.isRed).toBe(true);
+    expect(isRedInvoice(fields)).toBe(true);
+    expect(invoiceTotal(fields)).toBe(-826030);
   });
 });
 

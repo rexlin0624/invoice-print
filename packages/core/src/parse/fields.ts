@@ -24,7 +24,7 @@ import type { Cents } from '../model/money';
 import { capitalToCents, findAmounts, hasCurrencySymbol } from '../model/money';
 import type { PageText } from '../text/lines';
 import type { LabelHit } from '../text/anchors';
-import { findLabelTokens, inlineValue, matchAllSquashed, squash } from '../text/anchors';
+import { findLabelTokens, inlineValue, matchAllSquashed, normalizeLabel, squash } from '../text/anchors';
 
 export interface InvoiceExtraction {
   fields: Partial<Invoice>;
@@ -146,14 +146,73 @@ function detectBusinessTag(text: string): string | undefined {
 // 主流程
 // ---------------------------------------------------------------------------
 
-const SELLER_BUYER_LABELS = ['名称：', '名称:', '名 称：'] as const;
-const TAX_ID_LABELS = [
+const PARTY_NAME_GENERIC = ['名称：', '名称:', '名 称：'] as const;
+/**
+ * 老版专票 / 部分地区版式会把归属写进标签本身（「销货方名称」「购货方名称」）。
+ *
+ * 必须单独认：这种票上**销货方常在前、购货方在后**（实测红字专票如此），
+ * 继续按数电票「第 1 个名称 = 购买方」的顺序猜，会把买卖双方整个对调。
+ */
+const PARTY_NAME_EXPLICIT = [
+  '购货方名称',
+  '购买方名称',
+  '销货方名称',
+  '销售方名称',
+  '购方名称',
+  '销方名称',
+] as const;
+const SELLER_BUYER_LABELS = [...PARTY_NAME_EXPLICIT, ...PARTY_NAME_GENERIC] as const;
+
+const TAX_ID_GENERIC = [
   '统一社会信用代码/纳税人识别号：',
   '统一社会信用代码/纳税人识别号:',
   '纳税人识别号：',
+  '纳税人识别号:',
   '统一社会信用代码：',
 ] as const;
+const TAX_ID_EXPLICIT = [
+  '购货方纳税人识别号',
+  '购买方纳税人识别号',
+  '销货方纳税人识别号',
+  '销售方纳税人识别号',
+  '购方纳税人识别号',
+  '销方纳税人识别号',
+] as const;
+const TAX_ID_LABELS = [...TAX_ID_EXPLICIT, ...TAX_ID_GENERIC] as const;
 const COLUMN_STOP = [...SELLER_BUYER_LABELS, ...TAX_ID_LABELS, '统一社会信用代码', '纳税人识别号'] as const;
+
+/** 标签本身是否已经写明归属（「销货方…」= 销售方） */
+function partyOf(label: string): 'buyer' | 'seller' | undefined {
+  if (label.includes('销')) return 'seller';
+  if (label.includes('购') || label.includes('买')) return 'buyer';
+  return undefined;
+}
+
+/**
+ * 「对应蓝字发票号码」「对应信息表编号」不是**本票**的号码：
+ * 红字票上两者都会出现，读错就会拿原蓝票的号码去查重。
+ */
+function isReferenceNumberLabel(hit: LabelHit): boolean {
+  const line = hit.line;
+  if (!line) return false;
+  const own = line.tokens[hit.index];
+  const prev = hit.index > 0 ? line.tokens[hit.index - 1] : undefined;
+  const context = normalizeLabel(`${prev?.text ?? ''}${own?.text ?? ''}`);
+  return /蓝字|信息表|原发票/.test(context);
+}
+
+/**
+ * 「单位名称：」是开票方落款（老票底部），不是购销方栏。
+ * 不过滤的话，一张没有购销方标签的票会把它当成购买方。
+ */
+function isFooterPartyLabel(hit: LabelHit): boolean {
+  const line = hit.line;
+  if (!line) return false;
+  const own = line.tokens[hit.index];
+  const prev = hit.index > 0 ? line.tokens[hit.index - 1] : undefined;
+  const context = normalizeLabel(`${prev?.text ?? ''}${own?.text ?? ''}`);
+  return /(?:单位|收款单位|开票单位)名称:/.test(context);
+}
 
 /** 从 pages 抽取票面字段。pages 按页序排列。 */
 export function extractInvoiceFields(pages: readonly PageText[]): InvoiceExtraction {
@@ -183,7 +242,14 @@ export function extractInvoiceFields(pages: readonly PageText[]): InvoiceExtract
   }
 
   // ---- 发票号码 ----
-  const noHit = collectLabelHits(pages, ['发票号码：', '发票号码:', '发 票 号 码：'])[0];
+  // 老票/部分版式没有冒号（实测「发票号码 08876399」），所以标签列表里同时给
+  // 带冒号与不带冒号的写法；「对应蓝字发票号码」要排除掉，那是原蓝票的号码。
+  const noHit = collectLabelHits(pages, [
+    '发票号码：',
+    '发票号码:',
+    '发 票 号 码：',
+    '发票号码',
+  ]).find((hit) => !isReferenceNumberLabel(hit));
   if (noHit) {
     const inline = inlineValue(noHit.token, noHit.label);
     const right = readRightOf(noHit);
@@ -205,7 +271,9 @@ export function extractInvoiceFields(pages: readonly PageText[]): InvoiceExtract
   }
 
   // ---- 发票代码（老票）----
-  const codeHit = collectLabelHits(pages, ['发票代码：', '发票代码:'])[0];
+  const codeHit = collectLabelHits(pages, ['发票代码：', '发票代码:', '发票代码']).find(
+    (hit) => !isReferenceNumberLabel(hit),
+  );
   if (codeHit) {
     const v = squash(inlineValue(codeHit.token, codeHit.label) + (readRightOf(codeHit) ?? ''));
     const m = /\d{10,12}/.exec(v);
@@ -217,7 +285,13 @@ export function extractInvoiceFields(pages: readonly PageText[]): InvoiceExtract
   }
 
   // ---- 开票日期 ----
-  const dateHit = collectLabelHits(pages, ['开票日期：', '开票日期:', '开具日期：'])[0];
+  const dateHit = collectLabelHits(pages, [
+    '开票日期：',
+    '开票日期:',
+    '开具日期：',
+    '开票日期',
+    '开具日期',
+  ])[0];
   if (dateHit) {
     const raw = inlineValue(dateHit.token, dateHit.label) + (readRightOf(dateHit) ?? '');
     const d = normalizeDate(raw);
@@ -243,68 +317,99 @@ export function extractInvoiceFields(pages: readonly PageText[]): InvoiceExtract
   // ⚠️ 这里必须写成 if/else-if 两条互斥分支：曾经是「if (>=1)」+「else if (===1)」，
   // 结果只有一个「名称：」时两个分支都会跑，购买方和销售方被塞成同一个名字。
   const nameHits = collectLabelHits(pages, SELLER_BUYER_LABELS);
-  if (nameHits.length >= 2) {
-    const first = nameHits[0]!;
-    const buyer = readPartyValue(first);
-    if (buyer) {
-      fields.buyerName = buyer;
-      anchors.buyerName = first.token.text;
-      confidence.buyerName = CONF.strong;
+  const explicitNameHits = nameHits.filter((hit) => partyOf(hit.label) !== undefined);
+  if (explicitNameHits.length > 0) {
+    // 标签已经写明归属（销货方/购货方），不再按版式顺序猜 —— 老版红字专票
+    // 恰恰是销货方在前、购货方在后，按顺序套会把买卖双方对调。
+    for (const hit of explicitNameHits) {
+      const party = partyOf(hit.label)!;
+      const field = party === 'buyer' ? 'buyerName' : 'sellerName';
+      if (fields[field] !== undefined) continue;
+      const v = readPartyValue(hit);
+      if (!v) continue;
+      fields[field] = v;
+      anchors[field] = hit.token.text;
+      confidence[field] = CONF.strong;
     }
-    const second = nameHits[1]!;
-    const seller = readPartyValue(second);
-    if (seller) {
-      fields.sellerName = seller;
-      anchors.sellerName = second.token.text;
-      confidence.sellerName = CONF.strong;
-    }
-  } else if (nameHits.length === 1) {
-    // 只有一个「名称：」，归属要推断。两条依据，按可靠性排序：
-    //   ① 上下文里有「销售方」字样（单栏/竖版票常见）；
-    //   ② 位置：国家票面标准是购销方**左右分栏，购买方在左、销售方在右**
-    //      （见本文件顶部说明）。OCR 经常把「销售方」认剩一个「销」，
-    //      这时位置是唯一还站得住的信息。
-    const only = nameHits[0]!;
-    const v = readPartyValue(only);
-    const page = only.page;
-    const byText = /销售方/.test(squash(fullText.slice(0, 400)));
-    const byPosition =
-      page !== undefined && only.token.x + only.token.width / 2 > page.width / 2;
-    const isSeller = byText || byPosition;
-    if (v) {
-      if (isSeller) {
-        fields.sellerName = v;
-        anchors.sellerName = `${only.token.text}（单栏，靠${
-          byText ? '「销售方」' : '右半栏位置'
-        }判定）`;
-      } else {
-        fields.buyerName = v;
-        anchors.buyerName = `${only.token.text}（单栏，默认购买方）`;
+  } else {
+    const genericNameHits = nameHits.filter((hit) => !isFooterPartyLabel(hit));
+    if (genericNameHits.length >= 2) {
+      const first = genericNameHits[0]!;
+      const buyer = readPartyValue(first);
+      if (buyer) {
+        fields.buyerName = buyer;
+        anchors.buyerName = first.token.text;
+        confidence.buyerName = CONF.strong;
       }
-      confidence.sellerName = CONF.medium;
-      confidence.buyerName = CONF.medium;
+      const second = genericNameHits[1]!;
+      const seller = readPartyValue(second);
+      if (seller) {
+        fields.sellerName = seller;
+        anchors.sellerName = second.token.text;
+        confidence.sellerName = CONF.strong;
+      }
+    } else if (genericNameHits.length === 1) {
+      // 只有一个「名称：」，归属要推断。两条依据，按可靠性排序：
+      //   ① 上下文里有「销售方」字样（单栏/竖版票常见）；
+      //   ② 位置：国家票面标准是购销方**左右分栏，购买方在左、销售方在右**
+      //      （见本文件顶部说明）。OCR 经常把「销售方」认剩一个「销」，
+      //      这时位置是唯一还站得住的信息。
+      const only = genericNameHits[0]!;
+      const v = readPartyValue(only);
+      const page = only.page;
+      const byText = /销售方/.test(squash(fullText.slice(0, 400)));
+      const byPosition =
+        page !== undefined && only.token.x + only.token.width / 2 > page.width / 2;
+      const isSeller = byText || byPosition;
+      if (v) {
+        if (isSeller) {
+          fields.sellerName = v;
+          anchors.sellerName = `${only.token.text}（单栏，靠${
+            byText ? '「销售方」' : '右半栏位置'
+          }判定）`;
+        } else {
+          fields.buyerName = v;
+          anchors.buyerName = `${only.token.text}（单栏，默认购买方）`;
+        }
+        confidence.sellerName = CONF.medium;
+        confidence.buyerName = CONF.medium;
+      }
+      issues.push(
+        makeIssue('low-confidence', 'info', '票面只有一个「名称」锚点，购销方归属按上下文推断，请人工确认。', 'sellerName'),
+      );
     }
-    issues.push(
-      makeIssue('low-confidence', 'info', '票面只有一个「名称」锚点，购销方归属按上下文推断，请人工确认。', 'sellerName'),
-    );
   }
 
   // ---- 纳税人识别号 ----
   const taxHits = collectLabelHits(pages, TAX_ID_LABELS);
-  if (taxHits.length >= 1) {
-    const v = readPartyValue(taxHits[0]!);
-    if (v) {
-      fields.buyerTaxId = v;
-      anchors.buyerTaxId = taxHits[0]!.token.text;
-      confidence.buyerTaxId = CONF.strong;
+  const explicitTaxHits = taxHits.filter((hit) => partyOf(hit.label) !== undefined);
+  if (explicitTaxHits.length > 0) {
+    for (const hit of explicitTaxHits) {
+      const party = partyOf(hit.label)!;
+      const field = party === 'buyer' ? 'buyerTaxId' : 'sellerTaxId';
+      if (fields[field] !== undefined) continue;
+      const v = readPartyValue(hit);
+      if (!v) continue;
+      fields[field] = v;
+      anchors[field] = hit.token.text;
+      confidence[field] = CONF.strong;
     }
-  }
-  if (taxHits.length >= 2) {
-    const v = readPartyValue(taxHits[1]!);
-    if (v) {
-      fields.sellerTaxId = v;
-      anchors.sellerTaxId = taxHits[1]!.token.text;
-      confidence.sellerTaxId = CONF.strong;
+  } else {
+    if (taxHits.length >= 1) {
+      const v = readPartyValue(taxHits[0]!);
+      if (v) {
+        fields.buyerTaxId = v;
+        anchors.buyerTaxId = taxHits[0]!.token.text;
+        confidence.buyerTaxId = CONF.strong;
+      }
+    }
+    if (taxHits.length >= 2) {
+      const v = readPartyValue(taxHits[1]!);
+      if (v) {
+        fields.sellerTaxId = v;
+        anchors.sellerTaxId = taxHits[1]!.token.text;
+        confidence.sellerTaxId = CONF.strong;
+      }
     }
   }
   if (fields.sellerTaxId === undefined && fields.invoiceNo === undefined) {
@@ -342,42 +447,62 @@ export function extractInvoiceFields(pages: readonly PageText[]): InvoiceExtract
   }
 
   // ---- 价税合计（小写 + 大写）----
-  const totalLine = firstAcross(pages, (p) => p.lines.find((l) => /价税合计/.test(l.text)));
-  if (totalLine) {
-    const m = /价税合计[（(]?大写[）)]?([零壹贰叁肆伍陆柒捌玖拾佰仟万亿圆元角分整正〇]+)/.exec(
-      squash(totalLine.text),
-    );
-    if (m) {
-      fields.totalInWords = m[1];
-      anchors.totalInWords = totalLine.text;
-      confidence.totalInWords = CONF.strong;
-      const cents = capitalToCents(m[1]!);
-      if (cents !== undefined) {
-        fields.total = cents;
-        anchors.total = `${totalLine.text}（大写换算）`;
-        confidence.total = CONF.strong;
-      }
-    }
-    if (fields.total === undefined) {
-      const minor =
-        /[（(]小写[）)][¥￥]?\s?([\d,]+\.\d{2})/.exec(squash(totalLine.text)) ??
-        /[¥￥]\s?([\d,]+\.\d{2})/.exec(squash(totalLine.text));
-      if (minor) {
-        const cents = pickAmount(minor[1]!);
+  //
+  // 老票常见「价税合计」单独一行、真正的值在**下一行**（实测红字专票：
+  // 一行只有「价税合计」，下一行才是「（大写）负…（小写）￥-8260.30」）。
+  // 所以不能只拿第一个含「价税合计」的行去匹配，要把「本行」与「本行 + 下一行」
+  // 都当候选。
+  const totalCandidates: string[] = [];
+  for (const page of pages) {
+    page.lines.forEach((line, i) => {
+      if (!/价税合计/.test(line.text)) return;
+      totalCandidates.push(line.text);
+      const next = page.lines[i + 1];
+      if (next) totalCandidates.push(line.text + next.text);
+    });
+  }
+
+  for (const text of totalCandidates) {
+    if (fields.total !== undefined && fields.totalInWords !== undefined) break;
+    const s = squash(text);
+
+    if (fields.totalInWords === undefined) {
+      // 方向标记（负/負/（负））一并捕获：红冲票的大写会写「负捌仟…」，
+      // 丢掉这个字，`wordsSayNegative()` 就看不到方向，整张票会按正数入账。
+      const m = /价税合计[（(]?大写[）)]?([（(]?[负負]?[)）]?[零壹贰叁肆伍陆柒捌玖拾佰仟万亿圆元角分整正〇]+)/.exec(s);
+      if (m) {
+        fields.totalInWords = m[1];
+        anchors.totalInWords = text;
+        confidence.totalInWords = CONF.strong;
+        const cents = capitalToCents(m[1]!);
         if (cents !== undefined) {
           fields.total = cents;
-          anchors.total = totalLine.text;
+          anchors.total = `${text}（大写换算）`;
           confidence.total = CONF.strong;
         }
       }
     }
-  } else {
-    // 没有「价税合计」行：用 合计 的两个数相加
-    if (fields.amount !== undefined && fields.tax !== undefined) {
-      fields.total = fields.amount + fields.tax;
-      anchors.total = '（不含税 + 税额 推算）';
-      confidence.total = CONF.medium;
+
+    if (fields.total === undefined) {
+      const minor =
+        /[（(]小写[）)][¥￥]?([-－−]?[\d,]+\.\d{2})/.exec(s) ??
+        /[¥￥]([-－−]?[\d,]+\.\d{2})/.exec(s);
+      if (minor) {
+        const cents = pickAmount(minor[1]!);
+        if (cents !== undefined) {
+          fields.total = cents;
+          anchors.total = text;
+          confidence.total = CONF.strong;
+        }
+      }
     }
+  }
+
+  if (fields.total === undefined && fields.amount !== undefined && fields.tax !== undefined) {
+    // 没有可用的价税合计行：用 合计 的两个数相加
+    fields.total = fields.amount + fields.tax;
+    anchors.total = '（不含税 + 税额 推算）';
+    confidence.total = CONF.medium;
   }
 
   // ---- 校验码（老票 20 位，通常分 4 段）----

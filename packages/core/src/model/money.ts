@@ -52,11 +52,17 @@ export function formatCents(cents: Cents, symbol = '¥'): string {
 /** 文本里所有金额（分）。用于「取这一行/这一段里的钱」。 */
 export function findAmounts(text: string): Cents[] {
   const out: Cents[] = [];
-  // 允许 ¥￥ 前缀与千分位；至少要有小数点，避免把增值税率 "13%"、数量 "35.9" 以外的整数日期误当金额
-  const re = /[¥￥]?\s?(\d{1,3}(?:,\d{3})+\.\d{2}|\d+\.\d{2})/g;
+  // 允许 ¥￥ 前缀、千分位与负号；至少要有小数点，避免把增值税率 "13%"、
+  // 数量 "35.9" 以外的整数日期误当金额。
+  //
+  // 负号必须在这里认：红冲票的合计/税额都是负数（实测老版红字专票写作
+  // 「￥-7310.00」），漏掉负号的后果不是少一个字符 —— 而是整张票按正数入账，
+  // 汇总里「抵扣」变成「增加」。
+  const re = /[¥￥]?\s?([-－−])?\s?(\d{1,3}(?:,\d{3})+\.\d{2}|\d+\.\d{2})/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
-    const cents = decimalToCents(m[1] ?? '');
+    const sign = m[1] === undefined ? '' : '-';
+    const cents = decimalToCents(`${sign}${m[2] ?? ''}`);
     if (cents !== undefined) out.push(cents);
   }
   return out;
@@ -125,7 +131,29 @@ function chineseIntegerToNumber(text: string): number | undefined {
  *   零元整               → 0
  */
 export function capitalToCents(input: string): Cents | undefined {
-  const s = input.replace(/[\s,，]/g, '');
+  let s = input.replace(/[\s,，]/g, '');
+  if (s === '') return undefined;
+
+  /**
+   * 方向标记：红冲票的中文大写会写「负捌仟贰佰陆拾零元叁角」。
+   * 以前只把「负」当非法字符，整段大写直接返回 undefined，于是价税合计只能退回小写；
+   * 而有些票恰恰只有大写写了方向（小写漏负号），漏认就等于把红冲当正数。
+   *
+   * 与 `wordsSayNegative()` 认的范围保持一致：前缀（负/負/负数/（负）/负号）
+   * 与后缀（（负）/（负数）），不认「备注里带负」那种夹带。
+   */
+  let negative = false;
+  const head = /^(?:人民币|RMB|¥|￥)?(?:[（(](?:负|負|负数|負數)[)）]|负|負|[-－−])/.exec(s);
+  if (head) {
+    negative = true;
+    s = s.slice(head[0].length);
+  } else {
+    const tail = /[（(](?:负|負|负数|負數)[)）]$/.exec(s);
+    if (tail) {
+      negative = true;
+      s = s.slice(0, tail.index);
+    }
+  }
   if (s === '') return undefined;
 
   const yuanIdx = s.search(new RegExp(`[${CN_YUAN}]`));
@@ -148,7 +176,8 @@ export function capitalToCents(input: string): Cents | undefined {
   if (fm) cents += fm[1] ? CN_DIGIT[fm[1]]! : 0;
 
   if (!Number.isFinite(cents) || cents > MAX_AMOUNT_CENTS) return undefined;
-  return cents;
+  if (!negative || cents === 0) return cents;
+  return -cents;
 }
 
 /** 分 → 中文大写金额（用于生成票面信息卡）。 */
