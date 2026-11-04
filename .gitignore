@@ -5,6 +5,7 @@ dist-ssr/
 .DS_Store
 .vite/
 coverage/
+.vscode/
 
 # Rust（桌面端，M4）
 target/
