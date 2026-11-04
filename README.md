@@ -1,6 +1,7 @@
 # 发票工具
 
 [![Release](https://img.shields.io/github/v/release/rexlin0624/invoice-print?label=release)](https://github.com/rexlin0624/invoice-print/releases/latest)
+[![Web](https://img.shields.io/badge/web-online-brightgreen)](https://rexlin0624.github.io/invoice-print/)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Web-lightgrey)](#下载与安装)
 [![Privacy](https://img.shields.io/badge/data-stays%20local-brightgreen)](#隐私与数据)
 
@@ -30,6 +31,11 @@
 3. **首次打开要右键（或按住 Control 点击）→「打开」**。未签名、未公证，双击会被 Gatekeeper 拦下。
 
 ### 网页版（免安装）
+
+**在线使用：<https://rexlin0624.github.io/invoice-print/>** —— 打开即用，
+文件仍然只在本机浏览器里处理，不上传。
+
+也可以下载离线包，自己托管：
 
 1. 下载 `invoice-tool_<版本>_web.zip`，解压到一个目录。
 2. 当静态站点托管即可，例如在本机跑：
