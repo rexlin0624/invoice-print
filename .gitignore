@@ -37,5 +37,8 @@ apps/web/public/samples/
 # 新克隆的机器跑一次 `pnpm ocr:prepare`（见 apps/web/scripts/prepare-ocr.mjs）。
 apps/web/public/ocr/
 
+# pdfjs 的 CMap / 标准字体（约 2.4 MB）：从 node_modules 复制，dev/build 前自动重建
+apps/web/public/pdfjs/
+
 # e2e 的生产 CSP 冒烟会构建到这里（src/e2e/csp-smoke.ts 的入口产物）
 apps/web/dist-e2e/

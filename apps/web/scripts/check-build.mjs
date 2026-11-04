@@ -297,7 +297,7 @@ const ALLOWED_ROOT_FILES = new Set([
   'manifest.webmanifest',
   'robots.txt',
 ]);
-const ALLOWED_ROOT_DIRS = new Set(['assets', 'ocr']);
+const ALLOWED_ROOT_DIRS = new Set(['assets', 'ocr', 'pdfjs']);
 /** `assets/` 里只允许 Vite 会产出的类型（sourcemap 不在其中） */
 const ALLOWED_ASSET_EXT = new Set([
   '.js',
@@ -334,6 +334,8 @@ const isAllowed = (file) => {
   if (!ALLOWED_ROOT_DIRS.has(root)) return false;
   // OCR 模型目录内容随 tesseract.js 版本变（wasm / traineddata / gz），整体放行
   if (root === 'ocr') return true;
+  // pdfjs 的 CMap 与标准字体目录：内容来自 pdfjs-dist，整体放行
+  if (root === 'pdfjs') return true;
   return (
     parts.length === 2 && ALLOWED_ASSET_EXT.has(extname(file).toLowerCase())
   );

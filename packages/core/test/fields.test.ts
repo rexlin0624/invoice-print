@@ -220,3 +220,50 @@ describe('只剩一个「名称：」时的归属推断', () => {
     expect(fields.sellerName).toBeUndefined();
   });
 });
+
+/**
+ * 真实红票的两个版式：合计与数字分两行、价税合计标签本身是乱码。
+ */
+describe('红票：合计换行 / 无价税合计标签', () => {
+  it('「合计」在上一行、金额在下一行时，仍取到不含税金额与税额', () => {
+    const tokens = [
+      tok('销项负数', 40, 50, 36),
+      tok('合', 50, 200, 9),
+      tok('计', 95, 200, 9),
+      tok('¥-353.10', 400, 210, 48),
+      tok('¥-45.90', 550, 210, 42),
+      tok(
+        '价税合计(大写)(负数)叁佰玖拾玖圆整(小写)¥-399.00',
+        40,
+        225,
+        480,
+      ),
+    ];
+    const { fields } = extractInvoiceFields([buildPageText(0, PAGE_W, PAGE_H, tokens)]);
+    expect(fields.amount).toBe(-35310);
+    expect(fields.tax).toBe(-4590);
+    expect(fields.total).toBe(-39900);
+    expect(fields.totalInWords).toBe('(负数)叁佰玖拾玖圆整');
+  });
+
+  it('价税合计标签是乱码时，用带「负」的大写金额兜底（方向必须是负）', () => {
+    const tokens = [
+      tok('销项负数', 40, 50, 36),
+      tok('（负数）贰仟陆佰陆拾圆整', 60, 287, 180),
+      tok('¥-2660.00', 470, 287, 60),
+    ];
+    const { fields } = extractInvoiceFields([buildPageText(0, PAGE_W, PAGE_H, tokens)]);
+    expect(fields.total).toBe(-266000);
+    expect(fields.totalInWords).toBe('负贰仟陆佰陆拾圆整');
+  });
+
+  it('票种都认不出时，不把 20 位校验码当成发票号码', () => {
+    const tokens = [
+      tok('12240885121471127033', 464, 76, 120),
+      tok('011002100411', 464, 29, 72),
+    ];
+    const { fields } = extractInvoiceFields([buildPageText(0, PAGE_W, PAGE_H, tokens)]);
+    expect(fields.kind).toBe('unknown');
+    expect(fields.invoiceNo).toBeUndefined();
+  });
+});

@@ -4,14 +4,15 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc --noEmit -p tsconfig.json && vite build && node scripts/check-build.mjs",
+    "dev": "node scripts/prepare-pdfjs.mjs && vite",
+    "build": "node scripts/prepare-pdfjs.mjs && tsc --noEmit -p tsconfig.json && vite build && node scripts/check-build.mjs",
     "check:build": "node scripts/check-build.mjs",
     "preview": "vite preview",
     "test": "vitest run",
     "e2e": "node scripts/e2e.mjs",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit -p tsconfig.json",
+    "pdfjs:prepare": "node scripts/prepare-pdfjs.mjs",
     "ocr:prepare": "node scripts/prepare-ocr.mjs",
     "ocr:prepare:force": "node scripts/prepare-ocr.mjs --force"
   },

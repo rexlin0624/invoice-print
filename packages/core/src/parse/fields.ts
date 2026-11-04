@@ -22,7 +22,7 @@ import type { Issue, Invoice, InvoiceKind } from '../model/invoice';
 import { makeIssue } from '../model/invoice';
 import type { Cents } from '../model/money';
 import { capitalToCents, findAmounts, hasCurrencySymbol } from '../model/money';
-import type { PageText } from '../text/lines';
+import type { PageText, TextLine } from '../text/lines';
 import type { LabelHit } from '../text/anchors';
 import { findLabelTokens, inlineValue, matchAllSquashed, normalizeLabel, squash } from '../text/anchors';
 
@@ -44,14 +44,6 @@ const CONF = {
 // ---------------------------------------------------------------------------
 // 小工具
 // ---------------------------------------------------------------------------
-
-function firstAcross<T>(pages: readonly PageText[], fn: (p: PageText) => T | undefined): T | undefined {
-  for (const p of pages) {
-    const r = fn(p);
-    if (r !== undefined) return r;
-  }
-  return undefined;
-}
 
 function collectLabelHits(pages: readonly PageText[], labels: readonly string[]): LabelHit[] {
   const out: LabelHit[] = [];
@@ -260,8 +252,13 @@ export function extractInvoiceFields(pages: readonly PageText[]): InvoiceExtract
       confidence.invoiceNo = CONF.strong;
     }
   }
-  if (fields.invoiceNo === undefined) {
-    // 兜底：全文里的 20 位数字
+  if (fields.invoiceNo === undefined && kind !== 'unknown') {
+    // 兜底：全文里的 20 位数字（数电票号码）。
+    //
+    // 必须要求票种已识别：老票的**校验码**也是 20 位，且常常是一个完整 token。
+    // 标签文字一旦因字体没有 ToUnicode 而变成乱码，这里就会把校验码当号码
+    // （实测 2021 年北京电子专票：校验码 12240885121471127033 被误认成发票号码）。
+    // 票种都认不出来时，宁可留空让人工复核，也不要写一个错的号码。
     const m = /\d{20}/.exec(squash(fullText));
     if (m) {
       fields.invoiceNo = m[0];
@@ -427,21 +424,52 @@ export function extractInvoiceFields(pages: readonly PageText[]): InvoiceExtract
   }
 
   // ---- 合计（不含税金额 / 税额）----
-  const sumLine = firstAcross(pages, (p) =>
-    p.lines.find((l) => /合计/.test(l.text) && !/价税合计/.test(l.text)),
-  );
+  //
+  // 老票常把「合计」与两个数分成两行：上行只有「合计」，下一行才是
+  // `¥-353.10 ¥-45.90`（实测 2020 年国美/五星电器的红字普票）。
+  // 只读本行会得到 0 个数，于是 amount/tax 全空 —— 汇总时这张票只剩 total。
+  let sumLine: TextLine | undefined;
+  let sumAmounts: Cents[] = [];
+  let sumAnchor: string | undefined;
+  for (const p of pages) {
+    const index = p.lines.findIndex((l) => /合计/.test(l.text) && !/价税合计/.test(l.text));
+    if (index < 0) continue;
+    const line = p.lines[index]!;
+    const same = findAmounts(line.text);
+    if (same.length >= 2) {
+      sumLine = line;
+      sumAmounts = same;
+      sumAnchor = line.text;
+      break;
+    }
+    const next = p.lines[index + 1];
+    if (next) {
+      const below = findAmounts(next.text);
+      if (below.length >= 2) {
+        sumLine = next;
+        sumAmounts = below;
+        sumAnchor = line.text + next.text;
+        break;
+      }
+    }
+    // 本行只有一个数（老版专票偶见）：先记下，继续找更完整的
+    if (same.length === 1 && sumLine === undefined) {
+      sumLine = line;
+      sumAmounts = same;
+      sumAnchor = line.text;
+    }
+  }
   if (sumLine) {
-    const amounts = findAmounts(sumLine.text);
-    if (amounts.length >= 2) {
-      fields.amount = amounts[0];
-      fields.tax = amounts[1];
-      anchors.amount = sumLine.text;
-      anchors.tax = sumLine.text;
+    if (sumAmounts.length >= 2) {
+      fields.amount = sumAmounts[0];
+      fields.tax = sumAmounts[1];
+      anchors.amount = sumAnchor ?? sumLine.text;
+      anchors.tax = sumAnchor ?? sumLine.text;
       confidence.amount = CONF.strong;
       confidence.tax = CONF.strong;
-    } else if (amounts.length === 1) {
-      fields.amount = amounts[0];
-      anchors.amount = sumLine.text;
+    } else if (sumAmounts.length === 1) {
+      fields.amount = sumAmounts[0];
+      anchors.amount = sumAnchor ?? sumLine.text;
       confidence.amount = CONF.medium;
     }
   }
@@ -469,7 +497,7 @@ export function extractInvoiceFields(pages: readonly PageText[]): InvoiceExtract
     if (fields.totalInWords === undefined) {
       // 方向标记（负/負/（负））一并捕获：红冲票的大写会写「负捌仟…」，
       // 丢掉这个字，`wordsSayNegative()` 就看不到方向，整张票会按正数入账。
-      const m = /价税合计[（(]?大写[）)]?([（(]?[负負]?[)）]?[零壹贰叁肆伍陆柒捌玖拾佰仟万亿圆元角分整正〇]+)/.exec(s);
+      const m = /价税合计[（(]?大写[）)]?([（(]?(?:[负負](?:数|數)?)?[)）]?[零壹贰叁肆伍陆柒捌玖拾佰仟万亿圆元角分整正〇]+)/.exec(s);
       if (m) {
         fields.totalInWords = m[1];
         anchors.totalInWords = text;
@@ -495,6 +523,35 @@ export function extractInvoiceFields(pages: readonly PageText[]): InvoiceExtract
           confidence.total = CONF.strong;
         }
       }
+    }
+  }
+
+  // 标签文字本身可能是乱码（字体没有 ToUnicode），但**值**仍可读：
+  // 实测 2021 年北京电子专票，「价税合计（大写）」这几个字全是控制字符，
+  // 下一行「（负数）贰仟陆佰陆拾圆整」却完全正常。只认标签会让这张红票
+  // 既没有 total 也不判红冲，汇总里直接消失。
+  // 兜底只在完全没有价税合计结果时启用，并且要求行内带「负」—— 蓝票不走这里，
+  // 避免把任意一行大写金额误当合计。
+  if (fields.total === undefined) {
+    for (const page of pages) {
+      for (const line of page.lines) {
+        const s = squash(line.text);
+        const m = /[（(]?负(?:数)?[)）]?([零壹贰叁肆伍陆柒捌玖拾佰仟万亿圆元角分整正〇]+[圆元][零壹贰叁肆伍陆柒捌玖拾佰仟万亿圆元角分整正〇]*)/.exec(
+          s,
+        );
+        if (!m) continue;
+        const words = `负${m[1]}`;
+        const cents = capitalToCents(words);
+        if (cents === undefined) continue;
+        fields.totalInWords = words;
+        fields.total = cents;
+        anchors.totalInWords = line.text;
+        anchors.total = `${line.text}（无价税合计标签，按带「负」的大写金额兜底）`;
+        confidence.totalInWords = CONF.medium;
+        confidence.total = CONF.medium;
+        break;
+      }
+      if (fields.total !== undefined) break;
     }
   }
 

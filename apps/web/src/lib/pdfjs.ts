@@ -15,12 +15,25 @@
  * 那边由 `lib/render/engine.ts` 自己配 worker 地址（见 `lib/render.worker.ts` 的说明）。
  */
 
-import { setPdfWorkerSrc } from '@invoice-tool/core';
+import { setPdfAssetUrls, setPdfWorkerSrc } from '@invoice-tool/core';
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 import workerUrl from 'pdfjs-dist/legacy/build/pdf.worker.mjs?url';
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 // 内核随后懒加载 pdfjs 时，也能拿到同一个 worker
 setPdfWorkerSrc(workerUrl);
+
+/**
+ * CMap 与标准字体的同源目录（`scripts/prepare-pdfjs.mjs` 从 pdfjs-dist 复制的）。
+ *
+ * 必须是**绝对 URL**：pdfjs 可能让它的 worker 自己去 fetch，而 worker 里相对路径
+ * 是相对 worker 脚本解析的（`/assets/...`），不是相对页面。用 `document.baseURI`
+ * 拼一次，主线程与 worker 都指向同一处。
+ */
+const pdfAssetsBase = new URL(`${import.meta.env.BASE_URL}pdfjs/`, document.baseURI).href;
+setPdfAssetUrls({
+  cMapUrl: `${pdfAssetsBase}cmaps/`,
+  standardFontDataUrl: `${pdfAssetsBase}standard_fonts/`,
+});
 
 export { pdfjs };

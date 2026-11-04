@@ -64,10 +64,38 @@ export function setPdfWorkerSrc(src: string): void {
   }
 }
 
+/**
+ * pdfjs 的 CMap / 标准字体目录。
+ *
+ * 为什么必须由外壳注入：这两样都是**资源文件**，不是代码。PDF 里用 CID 字体
+ * 但没有 ToUnicode 时，pdfjs 只有拿到对应的 `.bcmap` 才能把字形编码翻成中文；
+ * 缺了它，`getTextContent()` 仍会「成功」返回——但每个字都是乱码/控制字符，
+ * 于是解析结果看起来像「一张空票」。这个失败模式很隐蔽：`hasText === true`，
+ * 字段却全空。真实老票（2019–2021 的电子普票尤其常见）大量命中。
+ *
+ * 内核不碰文件系统/网络，所以只存外壳给的 URL。Node 测试给文件路径，
+ * 浏览器给同源 URL（见 `apps/web/src/lib/pdfjs.ts`）。
+ */
+export interface PdfAssetUrls {
+  /** 目录 URL，末尾带 `/`；pdfjs 会拼上 `<名字>.bcmap` */
+  cMapUrl?: string;
+  /** 目录 URL，末尾带 `/`；供没有内嵌字体的 PDF 使用 */
+  standardFontDataUrl?: string;
+}
+
+let pdfAssetUrls: PdfAssetUrls = {};
+
+/** 由外壳在启动时调用一次；后设置的字段覆盖先前的，未设置的保持不变。 */
+export function setPdfAssetUrls(urls: PdfAssetUrls): void {
+  pdfAssetUrls = { ...pdfAssetUrls, ...urls };
+}
+
 export interface PdfTextOptions {
   password?: string;
   /** 最多解析多少页，默认 20 —— 发票不需要更多 */
   maxPages?: number;
+  /** 本次调用覆盖全局资源地址（测试/特殊宿主用） */
+  assets?: PdfAssetUrls;
 }
 
 function isTextItem(v: unknown): v is PdfJsTextItem {
@@ -83,6 +111,7 @@ export async function parsePdfText(
   options: PdfTextOptions = {},
 ): Promise<{ document: DocumentText; error?: string; pageCount: number }> {
   const { password, maxPages = 20 } = options;
+  const assets = { ...pdfAssetUrls, ...options.assets };
 
   let doc: PdfJsDocument | undefined;
   try {
@@ -101,6 +130,13 @@ export async function parsePdfText(
       useSystemFonts: false,
       verbosity: 0,
     };
+    if (assets.cMapUrl) {
+      params.cMapUrl = assets.cMapUrl;
+      params.cMapPacked = true;
+    }
+    if (assets.standardFontDataUrl) {
+      params.standardFontDataUrl = assets.standardFontDataUrl;
+    }
     if (password !== undefined) params.password = password;
 
     doc = await pdfjs.getDocument(params).promise;
